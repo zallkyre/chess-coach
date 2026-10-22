@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Coach Mode — chess with Ray</title>
+<link rel="icon" type="image/png" href="assets/icon.png">
+<link rel="apple-touch-icon" href="assets/icon.png">
+<meta name="theme-color" content="#1b2231">
 <style>
   :root{
     --bg:#101319;
@@ -26,11 +29,22 @@
                radial-gradient(900px 600px at 108% 112%,#1a2a21 0,transparent 58%), var(--bg);
     -webkit-font-smoothing:antialiased;
   }
-  .wrap{max-width:1200px;margin:0 auto;padding:16px 20px 48px}
+  .wrap{max-width:1200px;margin:0 auto;padding:14px 20px 48px}
   header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
-  header h1{margin:0;font-size:16px;letter-spacing:.15em;text-transform:uppercase}
-  .tag{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
-       border:1px solid var(--line);padding:3px 9px;border-radius:99px}
+
+  .hero{
+    position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--line);
+    margin-bottom:14px;box-shadow:0 14px 40px rgba(0,0,0,.35);
+  }
+  .hero-bg{position:absolute;inset:0;background:url(assets/banner.jpg) center/cover no-repeat;transform:scale(1.02)}
+  .hero:after{
+    content:"";position:absolute;inset:0;
+    background:linear-gradient(90deg,rgba(14,17,23,.96) 0%,rgba(14,17,23,.86) 42%,rgba(14,17,23,.45) 78%,rgba(14,17,23,.25) 100%);
+  }
+  .hero-in{position:relative;z-index:2;display:flex;align-items:center;gap:13px;padding:15px 17px}
+  .hero-icon{width:46px;height:46px;border-radius:11px;box-shadow:0 6px 18px rgba(0,0,0,.5);display:block}
+  .hero-txt h1{margin:0;font-size:16px;letter-spacing:.16em;text-transform:uppercase;color:#fff}
+  .hero-txt p{margin:2px 0 0;font-size:11.5px;color:#9aa3b5;letter-spacing:.02em}
 
   .app{display:flex;gap:20px;align-items:flex-start;justify-content:center}
 
@@ -208,6 +222,17 @@
   }
   .theme-dot.on{outline:2px solid var(--accent);outline-offset:1px}
 
+  .brain{border-top:1px solid var(--line);margin-top:9px;padding-top:9px;display:flex;flex-direction:column;gap:6px}
+  .brainhead{display:flex;align-items:center;justify-content:space-between;font:700 10px/1 ui-monospace,monospace;
+             letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .prow{display:flex;gap:6px}
+  .prow select{flex:0 0 42%;min-width:0}
+  .prow input{flex:1;min-width:0;background:#0b0e13;border:1px solid #262c38;border-radius:7px;
+              color:var(--text);padding:6px 9px;font:11px ui-monospace,monospace;outline:none}
+  .prow input:focus{border-color:#46506a}
+  .btn.sm{padding:0 10px;font-size:11px;flex:0 0 auto;border-radius:7px}
+  .pnote{font:11px/1.4 -apple-system,system-ui,sans-serif;color:#68718a}
+
   /* board themes */
   .board.theme-green{--sq-light:#e9edd6;--sq-dark:#6f9250}
   .board.theme-blue{--sq-light:#dee3ed;--sq-dark:#4a6fa5}
@@ -237,9 +262,15 @@
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>Coach Mode</h1>
-    <span class="tag">stockfish · not a pro</span>
+  <header class="hero">
+    <div class="hero-bg"></div>
+    <div class="hero-in">
+      <img class="hero-icon" src="assets/icon.png" alt="">
+      <div class="hero-txt">
+        <h1>Coach Mode</h1>
+        <p>chess with Ray — stockfish underneath, opinions on top</p>
+      </div>
+    </div>
   </header>
 
   <div class="app">
@@ -337,6 +368,22 @@
             <button class="theme-dot" data-theme="walnut" style="--a:#e8d3b5;--b:#9b6a43"></button>
             <button class="theme-dot" data-theme="slate" style="--a:#c9cfd8;--b:#4a5262"></button>
           </div>
+
+          <div class="brain">
+            <div class="brainhead">
+              <span>Coach brain</span>
+              <span class="kstat" id="keyStat">checking…</span>
+            </div>
+            <div class="prow">
+              <select id="prov"></select>
+              <input id="modelIn" placeholder="model" spellcheck="false">
+            </div>
+            <div class="prow">
+              <input id="importKey" type="password" placeholder="paste API key → stored in vault" autocomplete="off">
+              <button class="btn sm" id="importBtn">Save</button>
+            </div>
+            <div class="pnote" id="provNote"></div>
+          </div>
         </details>
       </div>
 
@@ -344,10 +391,6 @@
         <div class="chat">
           <input id="chatIn" placeholder="ask Ray something…" maxlength="200">
           <button id="chatBtn">Send</button>
-        </div>
-        <div class="keyrow">
-          <input id="keyIn" type="password" placeholder="groq key — stored in this browser only" maxlength="120" autocomplete="off">
-          <span class="kstat" id="keyStat">offline</span>
         </div>
       </div>
 
@@ -1298,7 +1341,8 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL = 'openai/gpt-oss-20b';
 let chatLog = [];
 let groqBusy = false;
-let proxyKey = false;      // server-side key (secrets-mcp vault) available
+let PROVS = [];             // from /api/health: id, label, model, handle, ready
+let proxyUp = false;
 
 /* one place that builds the conversation, whichever mouth answers */
 function rayMessages(text){
@@ -1320,20 +1364,60 @@ Voice: casual, dry, a little self-deprecating. Lowercase is fine. 1-2 short sent
 You can read the position data you're given. Never invent concrete engine lines or variations you weren't given.
 If asked something you can't know, say so plainly. If the user blunders, be kind but honest. Never pretend to be a real person.`;
 
-function groqKey(){
-  const el = document.getElementById('keyIn');
-  return ((el && el.value) || localStorage.getItem('ray_groq_key') || '').trim();
+/* ------- providers ------- */
+function currentProv(){
+  const id = document.getElementById('prov').value || 'groq';
+  return PROVS.find(p => p.id === id) || { id: id, label: id, model: '', handle: id, ready: false };
 }
+function currentModel(){
+  const v = (document.getElementById('modelIn').value || '').trim();
+  return v || currentProv().model;
+}
+function groqKey(){ return ''; }   // keys live in the vault, never in the browser
 
 function setKeyStat(){
   const el = document.getElementById('keyStat');
-  el.textContent = proxyKey ? 'vault' : groqKey() ? 'groq on' : 'offline';
-  el.className = 'kstat' + (proxyKey || groqKey() ? ' on' : '');
-  el.title = proxyKey ? 'key resolved by the local proxy, never sent to the browser'
-                      : groqKey() ? 'using the key typed in this browser' : 'no key';
-  // the vault proxy holds the key, so the field is dead weight
-  const row = document.querySelector('.keyrow');
-  if (row) row.style.display = proxyKey ? 'none' : 'flex';
+  if (!el) return;
+  const p = currentProv();
+  const ok = p.ready || p.keyless;
+  el.textContent = !proxyUp ? 'offline' : ok ? (p.keyless ? 'local' : 'vault') : 'no key';
+  el.className = 'kstat' + (ok && proxyUp ? ' on' : '');
+  el.title = ok ? 'resolved server-side from the secrets-mcp vault' : 'paste a key below';
+  const note = document.getElementById('provNote');
+  if (note){
+    note.textContent = !proxyUp ? 'proxy not running — Ray falls back to canned lines'
+      : p.keyless ? 'no key needed, talking to ' + p.model
+      : ok ? 'key stored in the vault as {{' + p.handle + '}}'
+      : 'store a key for ' + p.label + ' to wake Ray up';
+  }
+}
+
+function fillProviders(providers, activeId){
+  PROVS = providers || [];
+  const sel = document.getElementById('prov');
+  sel.innerHTML = PROVS.map(p => `<option value="${p.id}">${p.label}${p.ready || p.keyless ? '' : ' — no key'}</option>`).join('');
+  const want = activeId || (PROVS.find(p => p.ready || p.keyless) || PROVS[0] || {}).id || 'groq';
+  sel.value = want;
+  document.getElementById('modelIn').value = currentProv().model || '';
+  setKeyStat();
+}
+
+async function loadProviders(){
+  try {
+    const r = await fetch('/api/health');
+    if (!r.ok) throw new Error('no proxy');
+    const j = await r.json();
+    proxyUp = true;
+    fillProviders(j.providers, j.provider);
+  } catch (e){
+    proxyUp = false;
+    PROVS = [{ id: 'groq', label: 'Groq', model: 'openai/gpt-oss-20b', handle: 'groq', ready: false }];
+    const sel = document.getElementById('prov');
+    if (sel) sel.innerHTML = '<option value="groq">Groq</option>';
+    const m = document.getElementById('modelIn');
+    if (m) m.value = 'openai/gpt-oss-20b';
+    setKeyStat();
+  }
 }
 
 function positionContext(){
@@ -1359,18 +1443,22 @@ async function askProxy(text){
     const r = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: rayMessages(text) })
+      body: JSON.stringify({
+        provider: currentProv().id,
+        model: currentModel(),
+        messages: rayMessages(text)
+      })
     });
     if (r.status === 503) return { noKey: true };
     if (!r.ok){
-      const t = await r.text();
-      return { fatal: 'proxy said ' + r.status + ' — ' + t.slice(0, 90) };
+      let msg = 'proxy said ' + r.status;
+      try { const j = await r.json(); msg = j.error + (j.detail ? ' — ' + j.detail : ''); } catch (e) {}
+      return { fatal: msg.slice(0, 140) };
     }
     const j = await r.json();
     const out = (j.content || '').trim();
-    if (!out) return { fatal: 'empty reply from groq' };
+    if (!out) return { fatal: 'empty reply from ' + (j.provider || 'provider') };
     pushLog(text, out);
-    if (j.source === 'vault') proxyKey = true;
     return { text: out };
   } catch (e){
     return { offline: true };      // plain static server, no proxy
@@ -1504,14 +1592,38 @@ document.querySelectorAll('.theme-dot').forEach(btn => {
   };
 });
 
-const keyEl = document.getElementById('keyIn');
-keyEl.value = localStorage.getItem('ray_groq_key') || '';
-keyEl.addEventListener('input', () => {
-  const k = keyEl.value.trim();
-  if (k) localStorage.setItem('ray_groq_key', k); else localStorage.removeItem('ray_groq_key');
+/* provider picker + key import (the key goes to the local vault, not to us) */
+document.getElementById('prov').onchange = () => {
+  document.getElementById('modelIn').value = currentProv().model || '';
   setKeyStat();
+};
+document.getElementById('importBtn').onclick = async () => {
+  const field = document.getElementById('importKey');
+  const key = field.value.trim();
+  const p = currentProv();
+  const note = document.getElementById('provNote');
+  if (!p.handle){ note.textContent = p.label + ' needs no key'; return; }
+  if (!key){ field.focus(); note.textContent = 'paste a key first'; return; }
+  note.textContent = 'saving to vault…';
+  try {
+    const r = await fetch('/api/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handle: p.handle, key: key })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'failed');
+    field.value = '';
+    p.ready = true;
+    setKeyStat();
+    note.textContent = 'stored in the vault as {{' + j.handle + '}} ' + (j.hint || '');
+    say('got it. key\'s in the vault, i never see it.');
+  } catch (e){
+    note.textContent = 'could not save: ' + e.message;
+  }
+};
+document.getElementById('importKey').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('importBtn').click();
 });
-setKeyStat();
 
 async function sendChat(){
   const inp = document.getElementById('chatIn');
@@ -1523,15 +1635,10 @@ async function sendChat(){
 
   say('<span style="opacity:.55">…</span>');
 
-  // 1. vault proxy  2. a key typed in this browser  3. canned lines
+  // vault proxy first, canned lines as the floor
   const r = await askProxy(v);
   if (r.text){ saySafe(r.text); return; }
   if (r.fatal){ say(r.fatal); return; }
-
-  if (groqKey()){
-    const out = await askGroq(v);
-    if (out) { saySafe(out); return; }
-  }
   const r2 = reply(v);
   if (r2) say(r2);
 }
@@ -1563,10 +1670,8 @@ document.getElementById('lvVal').textContent = diffLabel(difficulty());
 document.getElementById('lvlTag').textContent = diffName(difficulty()).toUpperCase();
 applySettings();
 
-// is the vault proxy up? if so the browser never needs a key at all
-fetch('/api/health').then(r => r.ok ? r.json() : null).then(j => {
-  if (j && j.key){ proxyKey = true; setKeyStat(); }
-}).catch(() => {});
+// providers + vault status
+loadProviders();
 
 setRate('booting', 'forced', 'Warming up the engine…');
 say('One sec — starting stockfish. I\'m not fast, I\'m honest.');

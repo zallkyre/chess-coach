@@ -1,10 +1,16 @@
-
-# python
+﻿# python
 __pycache__/
 *.py[cod]
 .venv/
+venv/
 
 # local secrets - never commit
+vault.json
 *.key
 .env
 .env.*
+
+# build output
+build/
+dist/
+*.spec
