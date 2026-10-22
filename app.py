@@ -30,6 +30,29 @@ NOISE = 25                     # cp we do not count against you
 GRADE_DEPTH = 14
 MOVE_TIME_MS = 150
 REVIEW_DEPTH = 18
+SLIDE_MS = 170
+
+
+def depth_for(level: int) -> int:
+    """Search depth for a given difficulty. Low levels barely look ahead."""
+    if level <= 3:
+        return 1
+    if level <= 6:
+        return 2
+    if level <= 10:
+        return 4
+    if level <= 14:
+        return 7
+    if level <= 17:
+        return 10
+    return 13
+
+
+def random_chance(level: int) -> float:
+    """How often the opponent just plays a random legal move."""
+    table = {1: 0.50, 2: 0.40, 3: 0.30, 4: 0.20, 5: 0.14, 6: 0.10,
+             7: 0.07, 8: 0.05, 9: 0.04, 10: 0.03, 11: 0.02, 12: 0.01}
+    return table.get(level, 0.0)
 
 
 # --------------------------------------------------------------------------
@@ -163,14 +186,14 @@ class Engine:
                 val = cp
             return (val if side == "w" else -val), mate, best
 
-    def play(self, fen: str, level: int, ms: int = MOVE_TIME_MS):
+    def play(self, fen: str, level: int, depth: int | None = None, ms: int = MOVE_TIME_MS):
         """Pick a move at a given strength. Never full strength."""
         with self.lock:
             best = None
             self.skill(level)
             self.send("position fen " + fen)
-            self.send(f"go movetime {ms}")
-            end = time.time() + ms / 1000 + 6
+            self.send(f"go depth {depth}" if depth else f"go movetime {ms}")
+            end = time.time() + (6.0 if depth else ms / 1000 + 6)
             while time.time() < end:
                 try:
                     line = self.q.get(timeout=max(0.01, end - time.time()))
@@ -427,6 +450,7 @@ class CoachApp:
         self.chat_log = []
         self.photo = {}
         self._drag = None
+        self.ui_queue: queue.Queue = queue.Queue()
 
         self.settings = self.load_settings()
         exe = engine_path()
@@ -458,6 +482,25 @@ class CoachApp:
             pass
 
     # ---------------- ui ----------------
+    def ui(self, fn):
+        """Hand work to the Tk thread. Tk is not thread-safe, so worker
+        threads never touch widgets or call after() themselves."""
+        self.ui_queue.put(fn)
+
+    def _pump(self):
+        try:
+            for _ in range(12):
+                try:
+                    fn = self.ui_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn()
+                except Exception:
+                    pass
+        finally:
+            self.root.after(25, self._pump)
+
     def build_ui(self):
         r = self.root
         r.title(APP)
@@ -499,6 +542,7 @@ class CoachApp:
 
         self.build_panel(right)
         self.bind_keys()
+        self.root.after(25, self._pump)
         self.render()
 
     def build_header(self, parent):
@@ -959,15 +1003,19 @@ class CoachApp:
                            "color": not self.board.turn})
         self.render_moves()
         self.render()
+        self.busy = True
 
         if self.board.is_game_over():
-            self.end_game()
+            self.animate(move, lambda: self.end_game())
             return
 
-        self.busy = True
-        self.engine_lbl.configure(text="thinking…", fg="#dfbe57")
-        threading.Thread(target=self._grade_then_reply, args=(move, san, only),
-                         daemon=True).start()
+        def start_grading():
+            self.busy = True
+            self.engine_lbl.configure(text="thinking…", fg="#dfbe57")
+            threading.Thread(target=self._grade_then_reply, args=(move, san, only),
+                             daemon=True).start()
+
+        self.animate(move, start_grading)
 
     def _grade_then_reply(self, move, san, only):
         fen = self.board.fen()
@@ -977,7 +1025,7 @@ class CoachApp:
         loss = max(0, self.pre_eval - post_player)
         cls = "forced" if only else classify(loss, is_best)
         self.pre_eval = post_player
-        self.root.after(0, lambda: self.after_grade(cp_white, cls, loss, move))
+        self.ui(lambda: self.after_grade(cp_white, cls, loss, move))
 
     def after_grade(self, cp_white, cls, loss, move):
         self.last_eval = cp_white
@@ -998,12 +1046,22 @@ class CoachApp:
 
     def _engine_reply(self):
         fen = self.board.fen()
-        uci = self.engine.play(fen, self.settings["difficulty"])
-        self.root.after(0, lambda: self.after_reply(uci))
+        level = self.settings["difficulty"]
+        move = None
+        chance = random_chance(level)
+        if chance and random.random() < chance:
+            legal = list(self.board.legal_moves)
+            if legal:
+                move = random.choice(legal).uci()
+        if move is None:
+            move = self.engine.play(fen, level, depth_for(level))
+        time.sleep(0.30)          # let the player's own move land before the answer
+        self.ui(lambda: self.after_reply(move))
 
     def after_reply(self, uci):
         if not uci:
             self.busy = False
+            self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
             return
         move = chess.Move.from_uci(uci)
         if move not in self.board.legal_moves:
@@ -1017,11 +1075,46 @@ class CoachApp:
                            "color": not self.board.turn})
         self.render_moves()
         self.render()
-        self.busy = False
-        self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
 
-        if self.board.is_game_over():
-            self.end_game()
+        def settle():
+            self.busy = False
+            self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
+            if self.board.is_game_over():
+                self.end_game()
+
+        self.animate(move, settle)
+
+    # ---------------- animation ----------------
+    def animate(self, move, done=None):
+        """Slide the piece from its old square to the new one, then call done."""
+        cv = self.canvas
+        cv.delete("slide")
+        dest_tag = f"sq{move.to_square}"
+        cv.itemconfigure(dest_tag, state="hidden")
+
+        p = self.board.piece_at(move.to_square)
+        kind = p.symbol().lower() if p else "p"
+        color = "w" if (p and p.color == chess.WHITE) else "b"
+        img = self.piece_photo(kind, color, int(self.SQ * 0.92))
+
+        x1, y1 = self.center(move.from_square)
+        x2, y2 = self.center(move.to_square)
+        item = cv.create_image(x1, y1, image=img, tags="slide")
+        steps = 10
+
+        def step(i=1):
+            t = i / steps
+            e = 1 - (1 - t) ** 3
+            cv.coords(item, x1 + (x2 - x1) * e, y1 + (y2 - y1) * e)
+            if i < steps:
+                cv.after(max(8, SLIDE_MS // steps), lambda: step(i + 1))
+            else:
+                cv.delete("slide")
+                cv.itemconfigure(dest_tag, state="normal")
+                if done:
+                    done()
+
+        cv.after(8, step)
 
     def set_rating(self, cls, loss):
         self.chip.configure(text=LABEL.get(cls, "?"), bg=COL.get(cls, "#2a3040"),
@@ -1059,7 +1152,7 @@ class CoachApp:
         for i, fen in enumerate(positions):
             cp, _, _ = self.engine.analyze(fen, REVIEW_DEPTH, timeout=6)
             evals.append(cp)
-            self.root.after(0, lambda i=i: self.chip.configure(
+            self.ui(lambda i=i: self.chip.configure(
                 text=f"review {i+1}/{len(positions)}"))
         for i, rec in enumerate(self.stack):
             if i + 1 >= len(evals):
@@ -1072,7 +1165,7 @@ class CoachApp:
             rec["cls"] = ("forced" if rec["only"] else classify(loss, False)) \
                 if mover_white == (self.player_color == chess.WHITE) else "opp"
         self.reviewing = False
-        self.root.after(0, self.after_review)
+        self.ui(self.after_review)
 
     def after_review(self):
         self.render_moves()
@@ -1119,7 +1212,7 @@ class CoachApp:
         def boot():
             cp, _, _ = self.engine.analyze(self.board.fen(), 12)
             self.pre_eval = cp
-            self.root.after(0, lambda: self._set_eval(cp))
+            self.ui(lambda: self._set_eval(cp))
 
         threading.Thread(target=boot, daemon=True).start()
 
@@ -1147,7 +1240,7 @@ class CoachApp:
     def _rebase(self):
         cp, _, _ = self.engine.analyze(self.board.fen(), 12)
         self.pre_eval = cp if self.player_color == chess.WHITE else -cp
-        self.root.after(0, lambda: self._set_eval(cp))
+        self.ui(lambda: self._set_eval(cp))
 
     def hint(self):
         if self.busy or self.game_over or self.board.turn != self.player_color:
@@ -1162,7 +1255,7 @@ class CoachApp:
 
         def work():
             cp, _, best = self.engine.analyze(self.board.fen(), 18)
-            self.root.after(0, lambda: self._show_hint(best))
+            self.ui(lambda: self._show_hint(best))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1288,9 +1381,9 @@ class CoachApp:
             self.chat_log += [{"role": "user", "content": text},
                               {"role": "assistant", "content": out}]
             self.chat_log = self.chat_log[-24:]
-            self.root.after(0, lambda: self.say(out))
+            self.ui(lambda: self.say(out))
         except Exception as exc:
-            self.root.after(0, lambda: self.say(f"can't reach {PROVIDERS[prov]['label']}: {exc}"))
+            self.ui(lambda: self.say(f"can't reach {PROVIDERS[prov]['label']}: {exc}"))
 
     def key_dialog(self):
         win = tk.Toplevel(self.root)
