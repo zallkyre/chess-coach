@@ -14,3 +14,7 @@ vault.json
 build/
 dist/
 *.spec
+
+# stockfish binary - fetch from official releases, not in git
+engine/
+

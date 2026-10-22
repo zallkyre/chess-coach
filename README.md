@@ -2,8 +2,12 @@
 
 # Chess Coach
 
-A chess app that grades every move the moment you play it, draws what your
-opponent is threatening, and talks to you like a club player instead of a GM.
+A native desktop chess app that grades every move the moment you play it,
+draws what your opponent is threatening, and talks to you like a club player
+instead of a GM.
+
+Python + Tkinter. No browser, no webview, no JavaScript. Stockfish runs as a
+real local process and answers in about 30ms.
 
 Stockfish does the analysis. Ray does the talking. Ray is not a pro — he says so.
 
@@ -66,16 +70,18 @@ Two things make the ratings trustworthy:
 2. **A noise floor (25cp)** and depth-based searches during play. A 4-pawn
    swing is a blunder; a 0.15-pawn wobble between two searches is not.
 
-Live grading is depth 10 (~300ms). The post-game review runs depth 11 over every
-position with a progress bar, which is where the accuracy number comes from.
+Live grading is depth 14 in roughly 30ms. The post-game review runs depth 18 over
+every position with progress in the chip, which is where accuracy comes from.
 
 ## Stack
 
-- `index.html` — the whole UI, no framework, no build step
-- `proxy.py` — static server + chat proxy + vault access
-- `launcher.py` — desktop window (Edge/Chrome in `--app` mode), packaged by PyInstaller
-- `vendor/stockfish.js` — Stockfish 10 asm.js in a Web Worker
-- `vendor/chess.js` — rules and move generation
+- `app.py` — the whole app: Tkinter UI, board drawing, grading, review
+- `engine/stockfish.exe` — native Stockfish (not bundled in git, 98MB)
+- `python-chess` — rules, legal moves, FEN, SAN
+- `secrets_mcp` — DPAPI vault for API keys
+- `index.html` / `proxy.py` — the older browser build, still in the repo
+
+The desktop app talks to providers directly. Nothing listens on a port.
 
 ## Dev
 
@@ -84,15 +90,18 @@ python proxy.py                      # http://127.0.0.1:8777
 python launcher.py                   # same, in an app window
 ```
 
-Build the exe:
+Build the app:
 
 ```powershell
-pyinstaller --noconfirm --onefile --noconsole --name ChessCoach `
-  --icon assets/icon.ico `
-  --add-data "index.html;." --add-data "assets;assets" --add-data "vendor;vendor" `
+python -m PyInstaller --noconfirm --clean --onedir --noconsole --name ChessCoach `
+  --icon assets/icon.ico --add-data "assets;assets" --add-data "engine;engine" `
   --paths ..\secrets-mcp --hidden-import secrets_mcp --hidden-import secrets_mcp.store `
-  launcher.py
+  app.py
 ```
+
+`engine/stockfish.exe` is not in git. Grab it from
+[official-stockfish/Stockfish releases](https://github.com/official-stockfish/Stockfish/releases)
+(`stockfish-windows-x86-64-universal.exe`), rename it, drop it in `engine/`.
 
 Requires the `secrets-mcp` checkout next door for the vault code, or
 `pip install secrets-mcp`.
