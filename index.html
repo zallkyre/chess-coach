@@ -1,0 +1,1589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Coach Mode — chess with Ray</title>
+<style>
+  :root{
+    --bg:#101319;
+    --card:#1a1e27;
+    --card2:#232833;
+    --line:#2d3341;
+    --text:#e8ebf1;
+    --muted:#98a1b3;
+    --sq-light:#e9edd6;
+    --sq-dark:#6f9250;
+    --sel:#f6e96b;
+    --accent:#7ec96b;
+    --best:#6fbf5b; --excellent:#41a899; --good:#8bbf6a;
+    --inacc:#dfbe57; --mistake:#df9455; --blunder:#dd5a5a; --forced:#8a93a6;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; color:var(--text); font:14px/1.55 "Segoe UI",system-ui,-apple-system,sans-serif;
+    background:radial-gradient(1100px 650px at 12% -12%,#1d2432 0,transparent 60%),
+               radial-gradient(900px 600px at 108% 112%,#1a2a21 0,transparent 58%), var(--bg);
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1200px;margin:0 auto;padding:16px 20px 48px}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  header h1{margin:0;font-size:16px;letter-spacing:.15em;text-transform:uppercase}
+  .tag{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
+       border:1px solid var(--line);padding:3px 9px;border-radius:99px}
+
+  .app{display:flex;gap:20px;align-items:flex-start;justify-content:center}
+
+  /* board column */
+  .left{display:flex;flex-direction:column;gap:9px;flex:0 0 auto;width:min(76vmin,570px)}
+  .turnbar{
+    display:flex;align-items:center;gap:10px;height:38px;padding:0 14px;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    font-size:13px;font-weight:600;
+  }
+  .turnbar .dot2{width:9px;height:9px;border-radius:50%;background:var(--accent);
+                 box-shadow:0 0 12px rgba(126,201,107,.8)}
+  .turnbar.thinking .dot2{background:#dfbe57;box-shadow:0 0 12px rgba(223,190,87,.8);animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .turnbar .sub{margin-left:auto;font-weight:400;color:var(--muted);font-size:12px}
+
+  .boardrow{display:flex;gap:8px;align-items:stretch;width:100%}
+  .evalbar{
+    width:18px;flex:0 0 18px;border-radius:6px;background:#0a0c11;border:1px solid var(--line);
+    display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden;position:relative;
+  }
+  .evalbar .fill{background:linear-gradient(180deg,#f4f6fa,#c6cedd);height:50%;transition:height .25s ease}
+  .evalbar .val{display:none}
+
+  .boardwrap{position:relative;flex:1 1 auto;min-width:0}
+  .board{
+    width:100%;aspect-ratio:1 / 1;height:auto;
+    display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);
+    border-radius:6px;overflow:hidden;user-select:none;touch-action:none;
+    box-shadow:0 22px 55px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.05);
+  }
+  .sq{position:relative;display:flex;align-items:center;justify-content:center;cursor:default}
+  .sq.light{background:var(--sq-light)}
+  .sq.dark{background:var(--sq-dark)}
+  .sq.last{box-shadow:inset 0 0 0 999px rgba(246,233,107,.20)}
+  .sq.sel{box-shadow:inset 0 0 0 999px rgba(246,233,107,.44)}
+  .sq.hover{box-shadow:inset 0 0 0 999px rgba(255,255,255,.22)}
+  .sq.chk{background:radial-gradient(circle,rgba(221,90,90,.95) 14%,transparent 70%) var(--sq-light)}
+  .sq.dark.chk{background:radial-gradient(circle,rgba(221,90,90,.95) 14%,transparent 70%) var(--sq-dark)}
+
+  .piece{width:94%;height:94%;pointer-events:none;position:relative;z-index:3;will-change:transform}
+  .piece svg{width:100%;height:100%;display:block;filter:drop-shadow(0 2px 2px rgba(0,0,0,.35))}
+  .piece.drag{z-index:30;pointer-events:none;transform:scale(1.12);filter:drop-shadow(0 8px 12px rgba(0,0,0,.5))}
+
+  .dot{position:absolute;width:28%;height:28%;border-radius:50%;background:rgba(18,24,18,.30);z-index:2}
+  .dot.cap{width:100%;height:100%;border-radius:0;background:transparent;
+           box-shadow:inset 0 0 0 5px rgba(18,24,18,.30)}
+  .coord{position:absolute;font:700 9px/1 ui-monospace,monospace;pointer-events:none}
+  .sq.light .coord{color:rgba(70,90,50,.6)}
+  .sq.dark .coord{color:rgba(240,244,225,.65)}
+  .coord.file{bottom:2px;right:3px}
+  .coord.rank{top:2px;left:3px}
+
+  #arrows{position:absolute;inset:0;z-index:6;pointer-events:none}
+  .badge{
+    position:absolute;z-index:8;padding:2px 6px;border-radius:5px;
+    font:800 10px/1.5 ui-monospace,monospace;text-transform:uppercase;white-space:nowrap;
+    color:#0d1117;box-shadow:0 4px 12px rgba(0,0,0,.45);animation:pop .18s ease-out;
+  }
+  @keyframes pop{from{transform:scale(.5);opacity:0}to{transform:scale(1);opacity:1}}
+  .badge.best{background:var(--best)} .badge.excellent{background:var(--excellent)}
+  .badge.good{background:var(--good)} .badge.inaccuracy{background:var(--inacc)}
+  .badge.mistake{background:var(--mistake)} .badge.blunder{background:var(--blunder);color:#fff}
+  .badge.forced{background:var(--forced);color:#fff}
+
+  .promo{position:absolute;inset:0;z-index:20;display:none;align-items:center;justify-content:center;
+         background:rgba(8,10,14,.72);border-radius:6px}
+  .promo.on{display:flex}
+  .promo .box{display:flex;gap:10px;background:var(--card);padding:12px;border-radius:12px;border:1px solid var(--line)}
+  .promo button{width:56px;height:56px;padding:6px;background:var(--sq-light);border:none;border-radius:8px;cursor:pointer}
+  .promo button:hover{background:#fff}
+
+  /* right panel */
+  .panel{flex:1 1 330px;max-width:380px;min-width:290px;display:flex;flex-direction:column;gap:10px}
+  .card{background:linear-gradient(180deg,rgba(35,40,51,.92),rgba(26,30,39,.92));
+        border:1px solid var(--line);border-radius:13px;padding:12px}
+  .coach{display:flex;gap:11px;align-items:flex-start}
+  .avatar{width:46px;height:46px;flex:0 0 46px;border-radius:50%;overflow:hidden;border:1px solid #3a4459}
+  .whorow{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+  .whorow b{font-size:13px}
+  .lvl{font:800 9px/1 ui-monospace,monospace;letter-spacing:.1em;padding:3px 6px;border-radius:4px;
+       background:var(--accent);color:#0d1117}
+  .eng{font:700 9px/1 ui-monospace,monospace;letter-spacing:.09em;text-transform:uppercase;color:#68718a}
+  .eng.on{color:var(--accent)}
+  .bubble{background:#0e1117;border:1px solid var(--line);border-radius:9px;padding:9px 11px;
+          font-size:12.8px;min-height:58px;color:#dce2ec}
+
+  .rate{display:flex;gap:9px;align-items:center;padding:10px 12px;background:#0e1117;
+        border:1px solid var(--line);border-radius:11px;min-height:48px}
+  .chip{font:800 10px/1 ui-monospace,monospace;letter-spacing:.07em;text-transform:uppercase;
+        padding:6px 8px;border-radius:5px;background:#2a3040;color:#a8b1c2;flex:0 0 auto}
+  .rate .txt{font-size:12.2px;color:var(--muted)}
+  .rate .txt b{color:var(--text)}
+
+  .progress{height:4px;border-radius:2px;background:#222836;overflow:hidden;margin-top:8px;display:none}
+  .progress.on{display:block}
+  .progress i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+
+  .btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}
+  .btn{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px;border-radius:9px;
+       border:1px solid var(--line);background:var(--card2);color:var(--text);
+       font:600 12.5px/1 inherit;cursor:pointer;transition:.13s}
+  .btn:hover:not(:disabled){background:#2c3242;border-color:#3f4a60}
+  .btn:disabled{opacity:.38;cursor:not-allowed}
+  .btn.primary{background:var(--accent);color:#0d1117;border-color:transparent;grid-column:1/-1}
+  .btn.primary:hover{background:#8ed67a}
+
+  .moves{height:150px;overflow-y:auto;background:#0e1117;border:1px solid var(--line);
+         border-radius:9px;font:12.3px/1.72 ui-monospace,monospace;padding:2px 0}
+  .mv{display:grid;grid-template-columns:28px 1fr 1fr;padding:0 7px}
+  .mv:nth-child(odd){background:rgba(255,255,255,.02)}
+  .mv .n{color:#666f83}
+  .mv .m{cursor:pointer;border-radius:4px;padding:0 4px;display:flex;align-items:center;gap:5px;color:#cfd6e3}
+  .mv .m:hover{background:#1c2231}
+  .mv .g{font-size:9px;font-weight:800}
+  .g.best{color:var(--best)} .g.excellent{color:var(--excellent)} .g.good{color:var(--good)}
+  .g.inaccuracy{color:var(--inacc)} .g.mistake{color:var(--mistake)} .g.blunder{color:var(--blunder)}
+  .g.forced{color:var(--forced)}
+
+  .row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .row label{font-size:12px;color:var(--muted)}
+  select{background:#0e1117;color:var(--text);border:1px solid var(--line);border-radius:7px;
+         padding:6px 8px;font-size:12.3px;cursor:pointer}
+  .chat{display:flex;gap:6px}
+  .chat input{flex:1;background:#0e1117;border:1px solid var(--line);border-radius:7px;
+              color:var(--text);padding:8px 10px;font-size:12.3px;outline:none}
+  .chat input:focus{border-color:#46506a}
+  .chat button{background:var(--card2);border:1px solid var(--line);color:var(--text);
+               border-radius:7px;padding:0 11px;cursor:pointer;font-weight:600;font-size:12px}
+  .chat button:hover{background:#2c3242}
+  .keyrow{display:flex;gap:6px;align-items:center;margin-top:6px}
+  .keyrow input{flex:1;min-width:0;background:#0b0e13;border:1px solid #262c38;border-radius:7px;
+                color:var(--muted);padding:6px 9px;font:11px ui-monospace,monospace;outline:none}
+  .keyrow input:focus{border-color:#46506a;color:var(--text)}
+  .kstat{font:700 9px/1 ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;
+         color:#68718a;white-space:nowrap}
+  .kstat.on{color:var(--accent)}
+
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:22px;background:transparent;cursor:pointer}
+  input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;
+     background:linear-gradient(90deg,#4b8f6a,#7ec96b 45%,#dfbe57 70%,#dd5a5a);}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;margin-top:-5px;
+     border-radius:50%;background:#fff;border:2px solid #101319;box-shadow:0 1px 4px rgba(0,0,0,.5)}
+  input[type=range]::-moz-range-track{height:6px;border-radius:3px;
+     background:linear-gradient(90deg,#4b8f6a,#7ec96b 45%,#dfbe57 70%,#dd5a5a)}
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #101319}
+  .dv{font:700 10.5px/1 ui-monospace,monospace;letter-spacing:.05em;text-transform:uppercase;color:var(--text)}
+
+  /* settings */
+  .settings summary{
+    list-style:none;cursor:pointer;font:700 11px/1 ui-monospace,monospace;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--muted);padding:4px 2px;display:flex;align-items:center;gap:7px;
+  }
+  .settings summary::-webkit-details-marker{display:none}
+  .settings summary:before{content:"▸";font-size:10px;transition:.15s;color:var(--accent)}
+  .settings[open] summary:before{transform:rotate(90deg)}
+  .settings[open] summary{color:var(--text);margin-bottom:8px}
+  .setgrid{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px;margin-bottom:9px}
+  .sw{display:flex;align-items:center;gap:7px;font-size:11.5px;color:#c3cad8;cursor:pointer;user-select:none}
+  .sw input{display:none}
+  .sw span{
+    width:26px;height:15px;border-radius:99px;background:#2a3140;position:relative;flex:0 0 26px;transition:.15s;
+    border:1px solid #363e50;
+  }
+  .sw span:after{
+    content:"";position:absolute;top:1px;left:1px;width:11px;height:11px;border-radius:50%;
+    background:#6b7488;transition:.15s;
+  }
+  .sw input:checked + span{background:rgba(126,201,107,.25);border-color:#4d7a44}
+  .sw input:checked + span:after{transform:translateX(11px);background:var(--accent)}
+  .themerow{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted)}
+  .theme-dot{
+    width:24px;height:24px;border-radius:6px;border:1px solid #3a4256;cursor:pointer;padding:0;
+    background:linear-gradient(135deg,var(--a) 0 50%,var(--b) 50% 100%);
+  }
+  .theme-dot.on{outline:2px solid var(--accent);outline-offset:1px}
+
+  /* board themes */
+  .board.theme-green{--sq-light:#e9edd6;--sq-dark:#6f9250}
+  .board.theme-blue{--sq-light:#dee3ed;--sq-dark:#4a6fa5}
+  .board.theme-walnut{--sq-light:#e8d3b5;--sq-dark:#9b6a43}
+  .board.theme-slate{--sq-light:#c9cfd8;--sq-dark:#4a5262}
+  .board.hide-coords .coord{display:none}
+
+  .capstrip{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    height:24px;padding:0 2px;font:700 10px/1 ui-monospace,monospace;color:#8d96a8;
+  }
+  .capstrip .side{display:flex;align-items:center;gap:2px;min-width:0;overflow:hidden}
+  .capstrip svg{width:16px;height:16px;display:block;opacity:.9}
+  .capstrip .adv{color:var(--accent);font-weight:800}
+  .moves .empty{color:#5b6478;font:12px/1.6 -apple-system,system-ui,sans-serif;padding:8px 10px}
+  .hintline{font-size:11px;color:#68718a;text-align:center}
+  kbd{background:#0e1117;border:1px solid var(--line);border-radius:4px;padding:1px 4px;
+      font:700 10px ui-monospace,monospace;color:#a8b1c2}
+
+  @media (max-width:930px){
+    .app{flex-direction:column;align-items:center}
+    .panel{max-width:none;width:min(92vw,570px)}
+    .left{width:min(92vw,570px)}
+    .tag{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Coach Mode</h1>
+    <span class="tag">stockfish · not a pro</span>
+  </header>
+
+  <div class="app">
+    <div class="left">
+      <div class="turnbar" id="turnbar">
+        <span class="dot2"></span>
+        <span id="turnText">Starting engine…</span>
+        <span class="sub" id="turnSub"></span>
+      </div>
+      <div class="boardrow">
+        <div class="evalbar" title="Evaluation">
+          <div class="fill" id="evalFill"></div>
+          <div class="val" id="evalVal">0.0</div>
+        </div>
+        <div class="boardwrap">
+          <div class="board theme-green" id="board"></div>
+          <svg id="arrows" viewBox="0 0 800 800" preserveAspectRatio="none">
+            <g id="threatG"></g>
+            <g id="hintG"></g>
+          </svg>
+          <div class="promo" id="promo"><div class="box" id="promoBox"></div></div>
+        </div>
+      </div>
+      <div class="capstrip" id="capstrip"></div>
+    </div>
+
+    <div class="panel">
+      <div class="card coach">
+        <div class="avatar" id="avatar"></div>
+        <div style="flex:1;min-width:0">
+          <div class="whorow">
+            <b>Ray</b>
+            <span class="lvl" id="lvlTag">CLUB</span>
+            <span class="eng" id="eng">starting</span>
+          </div>
+          <div class="bubble" id="say">Booting stockfish. I'm not fast, I'm honest.</div>
+        </div>
+      </div>
+
+      <div class="rate">
+        <div class="chip" id="chip">ready</div>
+        <div style="flex:1;min-width:0">
+          <div class="txt" id="rateTxt">Make a move — I'll rate it instantly.</div>
+          <div class="progress" id="prog"><i id="progBar"></i></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="btns">
+          <button class="btn" id="hintBtn">💡 Hint</button>
+          <button class="btn" id="undoBtn">↶ Revert</button>
+          <button class="btn" id="flipBtn">⇅ Flip</button>
+          <button class="btn primary" id="newBtn">New game</button>
+        </div>
+      </div>
+
+      <div class="card" style="padding:7px"><div class="moves" id="moves"></div></div>
+
+      <div class="card" style="display:flex;flex-direction:column;gap:9px">
+        <div class="row">
+          <label for="level">Difficulty</label>
+          <span class="dv" id="lvVal">casual · 5</span>
+        </div>
+        <input type="range" id="level" min="1" max="20" step="1" value="5">
+        <div class="row">
+          <label for="color">Play as</label>
+          <select id="color"><option value="w" selected>White</option><option value="b">Black</option></select>
+        </div>        <div class="row">
+          <label for="ray">Ray plays</label>
+          <select id="ray">
+            <option value="off" selected>off — I play</option>
+            <option value="me">my side</option>
+            <option value="both">both sides</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card" style="padding:9px">
+        <details class="settings">
+          <summary>Settings</summary>
+          <div class="setgrid">
+            <label class="sw"><input type="checkbox" id="setThreats" checked><span></span>Threat arrows</label>
+            <label class="sw"><input type="checkbox" id="setDots" checked><span></span>Legal move dots</label>
+            <label class="sw"><input type="checkbox" id="setCoords" checked><span></span>Coordinates</label>
+            <label class="sw"><input type="checkbox" id="setSound" checked><span></span>Sound</label>
+            <label class="sw"><input type="checkbox" id="setEval" checked><span></span>Eval bar</label>
+            <label class="sw"><input type="checkbox" id="setTalk" checked><span></span>Ray talks</label>
+            <label class="sw"><input type="checkbox" id="setReview" checked><span></span>Auto review</label>
+            <label class="sw"><input type="checkbox" id="setConfirm"><span></span>Confirm resets</label>
+          </div>
+          <div class="themerow">
+            <span>Board</span>
+            <button class="theme-dot" data-theme="green" style="--a:#e9edd6;--b:#6f9250"></button>
+            <button class="theme-dot" data-theme="blue" style="--a:#dee3ed;--b:#4a6fa5"></button>
+            <button class="theme-dot" data-theme="walnut" style="--a:#e8d3b5;--b:#9b6a43"></button>
+            <button class="theme-dot" data-theme="slate" style="--a:#c9cfd8;--b:#4a5262"></button>
+          </div>
+        </details>
+      </div>
+
+      <div class="card" style="padding:9px">
+        <div class="chat">
+          <input id="chatIn" placeholder="ask Ray something…" maxlength="200">
+          <button id="chatBtn">Send</button>
+        </div>
+        <div class="keyrow">
+          <input id="keyIn" type="password" placeholder="groq key — stored in this browser only" maxlength="120" autocomplete="off">
+          <span class="kstat" id="keyStat">offline</span>
+        </div>
+      </div>
+
+      <div class="hintline"><kbd>H</kbd> hint · <kbd>U</kbd> revert · <kbd>N</kbd> new · <kbd>F</kbd> flip</div>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/chess.js"></script>
+<script>
+/* =========================================================
+   Coach Mode v2
+   - fast engine moves (movetime only, never depth)
+   - instant per-move rating, deep review after the game
+   - click OR drag to move
+   ========================================================= */
+
+const FILES = ['a','b','c','d','e','f','g','h'];
+const NAME  = { p:'pawn', n:'knight', b:'bishop', r:'rook', q:'queen', k:'king' };
+
+/* simple, flat piece silhouettes — no font dependency */
+const SHAPES = {
+  p:'<circle cx="22.5" cy="13.5" r="6.2"/><path d="M17.8 19.5h9.4l3.3 13H14.5z"/><rect x="10" y="32.2" width="25" height="5.2" rx="2.6"/>',
+  r:'<path d="M11.5 10.5h5.2v4.2h4.1v-4.2h5.4v4.2h4.1v-4.2h5.2v10.2H11.5z"/><path d="M15.6 20.7h13.8l2.1 11.6H13.5z"/><rect x="10" y="32.2" width="25" height="5.2" rx="2.6"/>',
+  n:'<path d="M15 32.4c0-6.8 2.6-11.4 7.6-14l-3.2-3.3 1.9-4.4 4.6 2.4c4.9 2.4 7.6 6.9 7.6 12.4v6.9z"/><rect x="10" y="32.2" width="25" height="5.2" rx="2.6"/>',
+  b:'<path d="M22.5 7.4c4.2 4.5 6.4 7.7 6.4 10.8a6.4 6.4 0 1 1-12.8 0c0-3.1 2.2-6.3 6.4-10.8z"/><rect x="15.8" y="24.6" width="13.4" height="4.4" rx="2.2"/><path d="M15.6 29h13.8l2.1 3.4H13.5z"/><rect x="10" y="32.4" width="25" height="5" rx="2.5"/>',
+  q:'<path d="M11.2 19.4l3.4-9.1 4.9 6.4L22.5 8l3 8.7 4.9-6.4 3.4 9.1z"/><path d="M13.6 19.4h17.8l3 13.1H10.6z"/><rect x="9.8" y="32.4" width="25.4" height="5" rx="2.5"/>',
+  k:'<path d="M20 4.6h5v4.4h4.4v5H25v4.4h-5v-4.4h-4.4v-5H20z"/><path d="M14.2 18.6h16.6l3.1 14H11.1z"/><rect x="9.8" y="32.4" width="25.4" height="5" rx="2.5"/>'
+};
+
+function pieceSvg(type, color){
+  const fill = color === 'w' ? '#f7f9fc' : '#2a3040';
+  const stroke = color === 'w' ? '#20262f' : '#0b0e13';
+  return `<svg viewBox="0 0 45 45" xmlns="http://www.w3.org/2000/svg">
+    <g fill="${fill}" stroke="${stroke}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round">
+      ${SHAPES[type]}
+    </g></svg>`;
+}
+
+/* ---------------- state ---------------- */
+const game = new Chess();
+let orientation = 'w';
+let playerColor = 'w';
+let selected = null;
+let legalForSel = [];
+let lastMove = null;
+let history = [];              // {san,from,to,promotion,color,cls,cpLoss,fenBefore}
+let preEval = null;            // player POV centipawns, best play, before player's move
+let lastEval = 0;              // last eval shown, white POV
+let busy = false;              // engine/queue activity
+let gameOver = false;
+let hintArmed = false;
+let hintCache = null;
+let pendingPromo = null;
+let reviewing = false;
+let cancelReview = false;
+let autoTimer = null;
+let dragging = null;
+
+const T = { move:220, grade:10, gradeCap:4000, hint:12, hintCap:6000, review:11, reviewCap:2500 };
+const NOISE = 25;   // centipawns of search noise we don't count against you
+
+function difficulty(){ const v = parseInt(document.getElementById('level').value, 10); return isNaN(v) ? 5 : v; }function diffName(v){ return v <= 3 ? 'beginner' : v <= 7 ? 'casual' : v <= 11 ? 'club' : v <= 15 ? 'strong' : 'ruthless'; }
+function diffLabel(v){ return diffName(v) + ' · ' + v; }
+function moveTimeMs(){ return Math.round(110 + difficulty() * 14); }   // 124ms … 390ms
+
+/* ---------------- settings ---------------- */
+const SETTINGS = Object.assign({
+  threats: true, dots: true, coords: true, sound: true,
+  eval: true, talk: true, review: true, confirm: false, theme: 'green'
+}, (() => { try { return JSON.parse(localStorage.getItem('ray_settings') || '{}'); } catch (e) { return {}; } })());
+
+function saveSettings(){
+  try { localStorage.setItem('ray_settings', JSON.stringify(SETTINGS)); } catch (e) {}
+}
+
+function applySettings(){
+  const b = document.getElementById('board');
+  if (b) b.className = 'board theme-' + SETTINGS.theme + (SETTINGS.coords ? '' : ' hide-coords');
+  const bar = document.querySelector('.evalbar');
+  if (bar) bar.style.display = SETTINGS.eval ? '' : 'none';
+  document.querySelectorAll('.theme-dot').forEach(d => d.classList.toggle('on', d.dataset.theme === SETTINGS.theme));
+  const map = { setThreats:'threats', setDots:'dots', setCoords:'coords', setSound:'sound',
+                setEval:'eval', setTalk:'talk', setReview:'review', setConfirm:'confirm' };
+  for (const id in map){
+    const el = document.getElementById(id);
+    if (el) el.checked = !!SETTINGS[map[id]];
+  }
+  renderThreats();
+}
+
+/* ---------------- engine ---------------- */
+const sf = new Worker('vendor/stockfish.js');
+let onLine = null;
+let queue = Promise.resolve();
+let engineReady = false;
+
+sf.onmessage = (e) => {
+  const d = e && e.data;
+  const line = typeof d === 'string' ? d : (d && typeof d.data === 'string' ? d.data : '');
+  if (line && onLine) onLine(line);
+};
+
+const raw = (c) => sf.postMessage(c);
+
+function enqueue(fn){
+  const next = queue.then(fn, fn);
+  queue = next.catch(() => {});
+  return next;
+}
+
+function waitFor(pred, ms){
+  return new Promise((resolve) => {
+    const t = setTimeout(() => { onLine = null; resolve(null); }, ms);
+    onLine = (line) => {
+      if (!pred(line)) return;
+      clearTimeout(t); onLine = null; resolve(line);
+    };
+  });
+}
+
+function initEngine(){
+  return enqueue(async () => {
+    raw('uci');
+    await waitFor(l => l === 'uciok', 5000);
+    raw('setoption name Hash value 16');
+    raw('setoption name Ponder value false');
+    raw('isready');
+    await waitFor(l => l === 'readyok', 5000);
+    engineReady = true;
+    setEng(true);
+    setSkill(difficulty());
+  });
+}
+
+function setSkill(n){ raw('setoption name Skill Level value ' + n); }
+
+/* One bounded search. Always resolves, never hangs the queue.
+   depth > 0 -> fixed depth (consistent quality). depth 0 -> movetime. */
+function analyze(fen, depth, capMs){
+  return enqueue(() => new Promise((resolve) => {
+    let cp = 0, mate = null, best = null, got = false;
+    const finish = () => { onLine = null; resolve({ cp, mate, best, ok: got }); };
+    const guard = setTimeout(finish, capMs || 8000);
+    onLine = (line) => {
+      if (line.startsWith('info')){
+        const m = line.match(/score (cp|mate) (-?\d+)/);
+        if (m){ if (m[1] === 'cp'){ cp = +m[2]; mate = null; } else { mate = +m[2]; } }
+        return;
+      }
+      if (line.startsWith('bestmove')){
+        got = true;
+        best = line.split(/\s+/)[1] || null;
+        clearTimeout(guard);
+        finish();
+      }
+    };
+    // analysis always runs at full strength: a lowered Skill Level fuzzes the
+    // reported score, which would poison every rating we compute from it
+    setSkill(20);
+    raw('position fen ' + fen);
+    raw(depth > 0 ? 'go depth ' + depth : 'go movetime ' + (capMs || 300));
+  }));
+}
+
+function engineMove(){
+  return enqueue(async () => {
+    const ms = moveTimeMs();
+    const d = difficulty();
+    setSkill(d);
+    raw('position fen ' + game.fen());
+    raw('go movetime ' + ms);
+    const line = await waitFor(l => l.startsWith('bestmove'), ms + 5000);
+    if (!line) return null;
+    let mv = line.split(/\s+/)[1];
+    if (!mv || mv === '(none)') return null;
+
+    // low levels get a small human-error layer on top of Stockfish's damping
+    if (d <= 6 && Math.random() < (7 - d) * 0.025){
+      const legal = game.moves({ verbose: true });
+      if (legal.length){
+        const r = legal[Math.floor(Math.random() * legal.length)];
+        mv = r.from + r.to + (r.promotion || '');
+      }
+    }
+    return mv;
+  });
+}
+
+function evalWhite(res, fen){
+  const turn = fen.split(' ')[1];
+  let v;
+  if (res.mate !== null && res.mate !== undefined)
+    v = res.mate > 0 ? 10000 - Math.abs(res.mate) * 10 : -10000 + Math.abs(res.mate) * 10;
+  else v = res.cp || 0;
+  return turn === 'w' ? v : -v;
+}
+const playerPov = (w) => playerColor === 'w' ? w : -w;
+
+function fmt(w){
+  if (Math.abs(w) >= 9800){
+    const n = Math.round((10000 - Math.abs(w)) / 10);
+    return (w > 0 ? '#' : '-#') + Math.max(0, n);
+  }
+  const p = w / 100;
+  return (p > 0 ? '+' : '') + p.toFixed(1);
+}
+function paintEval(w){
+  lastEval = w;
+  const p = Math.max(-700, Math.min(700, w)) / 700;
+  document.getElementById('evalFill').style.height = (50 + p * 50).toFixed(1) + '%';
+  updateSub();
+}
+function updateSub(){
+  const n = history.length;
+  document.getElementById('turnSub').textContent =
+    (n ? `move ${Math.floor(n/2)+1} · ` : '') + 'eval ' + fmt(lastEval || 0);
+}
+
+/* ---------------- classification ---------------- */
+function classify(rawLoss, isBest){
+  const loss = Math.max(0, rawLoss - NOISE);
+  if (isBest || loss <= 15) return 'best';
+  if (loss <= 55) return 'excellent';
+  if (loss <= 110) return 'good';
+  if (loss <= 210) return 'inaccuracy';
+  if (loss <= 400) return 'mistake';
+  return 'blunder';
+}
+const LABEL = { best:'Best', excellent:'Excellent', good:'Good', inaccuracy:'Inaccuracy',
+                mistake:'Mistake', blunder:'Blunder', forced:'Forced' };
+const COL = { best:'#6fbf5b', excellent:'#41a899', good:'#8bbf6a',
+              inaccuracy:'#dfbe57', mistake:'#df9455', blunder:'#dd5a5a', forced:'#8a93a6' };
+
+/* ---------------- Ray's voice ---------------- */
+const LINES = {
+  best:["that's the move. i didn't calculate it, i just agree with the engine.",
+        "best on the board. ok, show-off.",
+        "exactly what i'd have played. after checking. twice.",
+        "clean. genuinely."],
+  excellent:["really nice. not the engine's first pick but the same idea.",
+             "strong. i'd shake your hand but i'm a drawing.",
+             "that's a move i'd find ten minutes later in the shower."],
+  good:["fine move. not scary, not bad.",
+        "solid. nothing to yell about.",
+        "yeah, that works. you're not losing anything."],
+  inaccuracy:["hmm. not terrible, not great. there was something better.",
+              "slight wobble. i'm no grandmaster but that's loose.",
+              "you gave away a little something. not a disaster."],
+  mistake:["that one hurts a bit. there was a cleaner path.",
+           "that's a mistake. i've made four hundred tonight, so, solidarity.",
+           "you dropped real value. not fatal. probably."],
+  blunder:["ooh. that's a blunder. i'm sorry, i have to say it.",
+           "yeah, that's bad. like, 'not telling my friends' bad.",
+           "big one. don't panic — the revert button is right there."],
+  forced:["only move available. nothing to rate."]
+};
+const TACKON = {
+  cap:["took it.","nice grab.","free-ish material."],
+  chk:["check, keep going.","that's a check. pressure."],
+  quiet:["quiet move. i like quiet.","developing. fine.","slow and steady."]
+};
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+
+function say(text){ document.getElementById('say').innerHTML = text; }
+function saySafe(text){ document.getElementById('say').textContent = text; }   // model output stays text
+
+/* ---------------- board ---------------- */
+const boardEl = document.getElementById('board');
+const sqName = (fileIdx, rankIdx) => FILES[fileIdx] + (8 - rankIdx);
+
+function buildBoard(){
+  boardEl.innerHTML = '';
+  for (let r = 0; r < 8; r++){
+    for (let c = 0; c < 8; c++){
+      const fileIdx = orientation === 'w' ? c : 7 - c;
+      const rankIdx = orientation === 'w' ? r : 7 - r;
+      const name = sqName(fileIdx, rankIdx);
+      const d = document.createElement('div');
+      d.className = 'sq ' + ((fileIdx + rankIdx) % 2 === 0 ? 'light' : 'dark');
+      d.dataset.sq = name;
+      if (rankIdx === 7){
+        const t = document.createElement('div');
+        t.className = 'coord file'; t.textContent = FILES[fileIdx]; d.appendChild(t);
+      }
+      if (fileIdx === 0){
+        const t = document.createElement('div');
+        t.className = 'coord rank'; t.textContent = String(8 - rankIdx); d.appendChild(t);
+      }
+      boardEl.appendChild(d);
+    }
+  }
+}
+
+function render(){
+  const cells = boardEl.children;
+  const grid = game.board();
+  const kingSq = game.in_check() ? findKing(game.turn()) : null;
+
+  for (const cell of cells){
+    const sq = cell.dataset.sq;
+    cell.querySelectorAll('.piece,.dot').forEach(n => n.remove());
+    cell.classList.remove('sel','last','chk','hover');
+
+    const fileIdx = FILES.indexOf(sq[0]);
+    const row = 8 - parseInt(sq[1], 10);
+    const p = grid[row][fileIdx];
+    if (p){
+      const el = document.createElement('div');
+      el.className = 'piece ' + p.color;
+      el.dataset.piece = p.type + p.color;
+      el.innerHTML = pieceSvg(p.type, p.color);
+      cell.appendChild(el);
+    }
+    if (lastMove && (sq === lastMove.from || sq === lastMove.to)) cell.classList.add('last');
+    if (kingSq === sq) cell.classList.add('chk');
+    if (selected === sq) cell.classList.add('sel');
+    if (selected && SETTINGS.dots){
+      const mv = legalForSel.find(m => m.to === sq);
+      if (mv){
+        const d = document.createElement('div');
+        d.className = 'dot' + ((mv.flags.includes('c') || mv.flags.includes('e')) ? ' cap' : '');
+        cell.appendChild(d);
+      }
+    }
+  }
+  document.getElementById('turnText').textContent = turnLabel();
+  updateSub();
+  renderThreats();
+  renderCaptured();
+}
+
+function turnLabel(){
+  if (gameOver) return 'Game over';
+  if (reviewing) return 'Reviewing…';
+  if (game.turn() === playerColor) return rayMode() === 'me' ? 'Ray is playing your side…' : 'Your move';
+  return 'Ray is thinking…';
+}
+
+function statusBar(mode){
+  const b = document.getElementById('turnbar');
+  b.classList.toggle('thinking', mode === 'thinking');
+  document.getElementById('turnText').textContent = turnLabel();
+}
+
+function findKing(color){
+  const g = game.board();
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++){
+    const p = g[r][c];
+    if (p && p.type === 'k' && p.color === color) return FILES[c] + (8 - r);
+  }
+  return null;
+}
+
+function sqCenter(sq){
+  const f = FILES.indexOf(sq[0]);
+  const rank = parseInt(sq[1], 10);
+  const col = orientation === 'w' ? f : 7 - f;
+  const row = orientation === 'w' ? 8 - rank : rank - 1;
+  return { x: col * 100 + 50, y: row * 100 + 50 };
+}
+
+function drawArrow(from, to, opts){
+  const o = opts || {};
+  const group = document.getElementById(o.group || 'hintG');
+  if (!group) return;
+  if (o.clear !== false) group.innerHTML = '';
+  const a = sqCenter(from), b = sqCenter(to);
+  const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
+  if (len < 1) return;
+  const ux = dx / len, uy = dy / len, head = o.head || 30;
+  const ex = b.x - ux * head, ey = b.y - uy * head;
+  const color = o.color || '#7ec96b';
+  const ns = 'http://www.w3.org/2000/svg';
+  const line = document.createElementNS(ns,'line');
+  line.setAttribute('x1', a.x + ux*24); line.setAttribute('y1', a.y + uy*24);
+  line.setAttribute('x2', ex); line.setAttribute('y2', ey);
+  line.setAttribute('stroke', color); line.setAttribute('stroke-width', o.width || 16);
+  line.setAttribute('stroke-linecap','round'); line.setAttribute('opacity', o.opacity || .85);
+  const poly = document.createElementNS(ns,'polygon');
+  poly.setAttribute('points', `${b.x},${b.y} ${ex-uy*18},${ey+ux*18} ${ex+uy*18},${ey-ux*18}`);
+  poly.setAttribute('fill', color); poly.setAttribute('opacity', o.opacity || .92);
+  group.append(line, poly);
+  if (o.ttl && o.group !== 'threatG'){
+    setTimeout(() => { if (group.childNodes.length) group.innerHTML = ''; }, o.ttl);
+  }
+}
+function clearArrow(){ document.getElementById('hintG').innerHTML = ''; }
+
+/* --------- threat map: what the engine side is attacking right now --------- */
+function renderThreats(){
+  const g = document.getElementById('threatG');
+  if (!g) return;
+  g.innerHTML = '';
+  if (!SETTINGS.threats || gameOver || reviewing) return;
+
+  const enemy = playerColor === 'w' ? 'b' : 'w';
+  const f = game.fen().split(' ');
+  let probe;
+  try {
+    probe = new Chess([f[0], enemy, f[2], '-', f[4], f[5]].join(' '));
+  } catch (e){ return; }
+
+  const targets = [];
+  const b = probe.board();
+  for (let r = 0; r < 8; r++){
+    for (let c = 0; c < 8; c++){
+      const p = b[r][c];
+      if (!p || p.color !== enemy) continue;
+      const from = FILES[c] + (8 - r);
+      let mv;
+      try { mv = probe.moves({ square: from, verbose: true }); } catch (e){ continue; }
+      for (const m of mv){
+        const victim = game.get(m.to);
+        if (victim && victim.color === playerColor) targets.push([from, m.to]);
+      }
+    }
+  }
+  // most valuable victim first, and don't draw a wall of arrows
+  const val = { p:1, n:3, b:3, r:5, q:9, k:0 };
+  targets.sort((A, B) => val[(game.get(B[1])||{}).type] - val[(game.get(A[1])||{}).type]);
+  for (const [from, to] of targets.slice(0, 8)){
+    drawArrow(from, to, { group: 'threatG', color: '#dd5a5a', opacity: .38, width: 10, head: 22 });
+  }
+}
+
+/* --------- captured material --------- */
+const PIECE_VAL = { p:1, n:3, b:3, r:5, q:9, k:0 };
+
+function renderCaptured(){
+  const el = document.getElementById('capstrip');
+  if (!el) return;
+  const start = { p:8, n:2, b:2, r:2, q:1 };
+  const have = { w:{}, b:{} };
+  for (const row of game.board()) for (const p of row) if (p) have[p.color][p.type] = (have[p.color][p.type]||0)+1;
+
+  const lost = { w:[], b:[] };
+  let score = { w:0, b:0 };
+  for (const col of ['w','b']) for (const t in start){
+    const n = Math.max(0, start[t] - (have[col][t]||0));
+    for (let i = 0; i < n; i++) lost[col].push(t);
+    score[col] += n * PIECE_VAL[t];
+  }
+  // what you captured = pieces the enemy lost
+  const mine = lost[playerColor === 'w' ? 'b' : 'w'];
+  const theirs = lost[playerColor];
+  const diff = score[playerColor === 'w' ? 'b' : 'w'] - score[playerColor];
+
+  const icon = (t, c) => `<svg viewBox="0 0 45 45">${'<g fill="' + (c==='w'?'#f7f9fc':'#2a3040') + '" stroke="' + (c==='w'?'#20262f':'#0b0e13') + '" stroke-width="1.7">' + SHAPES[t] + '</g>'}</svg>`;
+  const enemyCol = playerColor === 'w' ? 'b' : 'w';
+
+  el.innerHTML =
+    `<div class="side" title="pieces you took">${mine.map(t => icon(t, enemyCol)).join('')}</div>` +
+    `<div class="adv">${diff > 0 ? '+' + diff : diff < 0 ? diff : '—'}</div>` +
+    `<div class="side" style="justify-content:flex-end" title="pieces you lost">${theirs.map(t => icon(t, playerColor)).join('')}</div>`;
+}
+
+function badgeAt(sq, cls){
+  document.querySelectorAll('.badge').forEach(b => b.remove());
+  const cell = boardEl.querySelector(`[data-sq="${sq}"]`);
+  if (!cell) return;
+  const el = document.createElement('div');
+  el.className = 'badge ' + cls;
+  el.textContent = LABEL[cls];
+  cell.appendChild(el);
+  setTimeout(() => el.remove(), 2400);
+}
+
+/* ---------------- input: click + drag ---------------- */
+boardEl.addEventListener('pointerdown', onDown);
+window.addEventListener('pointermove', onMove);
+window.addEventListener('pointerup', onUp);
+window.addEventListener('pointercancel', onUp);
+
+function playerCanAct(){
+  return !gameOver && !reviewing && !busy && game.turn() === playerColor && rayMode() === 'off';
+}
+
+function onDown(e){
+  if (pendingPromo) return;
+  const cell = e.target.closest('.sq');
+  if (!cell) return;
+  const sq = cell.dataset.sq;
+
+  if (!playerCanAct()){
+    // still allow inspecting: select-only preview
+  }
+  const piece = game.get(sq);
+
+  if (playerCanAct() && piece && piece.color === playerColor){
+    selected = sq;
+    legalForSel = game.moves({ square: sq, verbose: true });
+    render();
+    const pe = cell.querySelector('.piece');
+    if (pe){
+      dragging = { from: sq, el: pe, moved: false, sx: e.clientX, sy: e.clientY };
+      pe.classList.add('drag');
+      pe.style.transform = '';
+    }
+    e.preventDefault();
+    return;
+  }
+
+  if (selected && sq !== selected){
+    const target = legalForSel.filter(m => m.to === sq);
+    if (target.length){
+      if (target.some(m => m.flags.includes('p')) && target.length > 1){ askPromo(selected, sq); return; }
+      commitMove(selected, sq, target[0].promotion || 'q', false);
+      return;
+    }
+  }
+  if (selected === sq){ selected = null; legalForSel = []; render(); }
+}
+
+function onMove(e){
+  if (!dragging) return;
+  const dx = e.clientX - dragging.sx, dy = e.clientY - dragging.sy;
+  if (Math.hypot(dx, dy) > 4) dragging.moved = true;
+  if (!dragging.moved) return;
+  dragging.el.style.transform = `translate(${dx}px,${dy}px)`;
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  const cell = under && under.closest ? under.closest('.sq') : null;
+  boardEl.querySelectorAll('.sq.hover').forEach(c => c.classList.remove('hover'));
+  if (cell && cell.parentElement === boardEl) cell.classList.add('hover');
+}
+
+function onUp(e){
+  if (!dragging) return;
+  const d = dragging; dragging = null;
+  boardEl.querySelectorAll('.sq.hover').forEach(c => c.classList.remove('hover'));
+  d.el.classList.remove('drag');
+  d.el.style.transform = '';
+
+  if (!d.moved){ render(); return; }   // treat as a click-select
+
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  const cell = under && under.closest ? under.closest('.sq') : null;
+  const to = cell && cell.parentElement === boardEl ? cell.dataset.sq : null;
+
+  if (to && to !== d.from){
+    const targets = legalForSel.filter(m => m.to === to);
+    if (targets.length){
+      if (targets.some(m => m.flags.includes('p')) && targets.length > 1){ askPromo(d.from, to); return; }
+      commitMove(d.from, to, targets[0].promotion || 'q', false);
+      return;
+    }
+  }
+  render();  // snap back
+}
+
+function askPromo(from, to){
+  pendingPromo = { from, to };
+  const box = document.getElementById('promoBox');
+  box.innerHTML = '';
+  ['q','r','b','n'].forEach(t => {
+    const b = document.createElement('button');
+    b.innerHTML = pieceSvg(t, 'w');
+    b.onclick = () => {
+      document.getElementById('promo').classList.remove('on');
+      pendingPromo = null;
+      commitMove(from, to, t, false);
+    };
+    box.appendChild(b);
+  });
+  document.getElementById('promo').classList.add('on');
+}
+
+/* ---------------- move flow ---------------- */
+function rayMode(){ return document.getElementById('ray').value; }
+
+function commitMove(from, to, promo, isRay){
+  selected = null; legalForSel = []; clearArrow();
+  hintArmed = false; hintCache = null;
+
+  const fenBefore = game.fen();
+  const onlyMove = game.moves().length === 1;
+  const mv = game.move({ from, to, promotion: promo || 'q' });
+  if (!mv) { render(); return; }
+
+  lastMove = { from, to };
+  history.push({ san: mv.san, from, to, promotion: promo || 'q', color: mv.color,
+                 cls: null, cpLoss: 0, fenBefore, onlyMove });
+  renderMoves(); render();
+  click(mv.flags.includes('c') ? 'cap' : 'move');
+
+  if (isRay){
+    finishTurnRay(mv);
+  } else {
+    gradeThenReply(mv);
+  }
+}
+
+async function gradeThenReply(mv){
+  if (game.game_over()){ endGame(); return; }
+
+  const fenAfter = game.fen();
+  const h = history[history.length - 1];
+
+  busy = true; statusBar('thinking');
+  setRate('…', 'checking', 'hold on, looking…');
+
+  const res = await analyze(fenAfter, T.grade, T.gradeCap);
+  const postWhite = evalWhite(res, fenAfter);
+  const postPlayer = playerPov(postWhite);
+
+  const isBest = res.best && res.best.slice(0,2) === mv.from && res.best.slice(2,4) === mv.to;
+  let loss = preEval === null ? 0 : Math.max(0, preEval - postPlayer);
+  const cls = h.onlyMove ? 'forced' : classify(loss, isBest);
+
+  h.cls = cls; h.cpLoss = loss;
+  preEval = postPlayer;
+
+  paintEval(postWhite);
+  badgeAt(mv.to, cls);
+  setRate(LABEL[cls], cls, cls === 'forced' ? 'Only legal move.' :
+          cls === 'best' ? "Engine's top choice." :
+          `Cost you about <b>${(loss/100).toFixed(2)}</b> pawns.`);
+  react(mv, cls);
+  renderMoves();
+
+  // Ray replies
+  const reply = await engineMove();
+  if (reply){
+    const rf = reply.slice(0,2), rt = reply.slice(2,4), rp = reply.length > 4 ? reply[4] : 'q';
+    const fenB = game.fen();
+    const only = game.moves().length === 1;
+    const rmv = game.move({ from: rf, to: rt, promotion: rp });
+    if (rmv){
+      lastMove = { from: rf, to: rt };
+      history.push({ san: rmv.san, from: rf, to: rt, promotion: rp, color: rmv.color,
+                     cls: 'opp', cpLoss: 0, fenBefore: fenB, onlyMove: only });
+      renderMoves(); render();
+      click(rmv.flags.includes('c') ? 'cap' : 'move');
+    }
+  }
+
+  busy = false;
+  statusBar();
+  render();
+  if (game.game_over()){ endGame(); return; }
+  scheduleAuto();
+}
+
+async function finishTurnRay(mv){
+  if (game.game_over()){ endGame(); return; }
+  busy = true; statusBar('thinking');
+  const reply = await engineMove();
+  if (reply){
+    const rf = reply.slice(0,2), rt = reply.slice(2,4), rp = reply.length > 4 ? reply[4] : 'q';
+    const fenB = game.fen();
+    const rmv = game.move({ from: rf, to: rt, promotion: rp });
+    if (rmv){
+      lastMove = { from: rf, to: rt };
+      history.push({ san: rmv.san, from: rf, to: rt, promotion: rp, color: rmv.color,
+                     cls: 'opp', cpLoss: 0, fenBefore: fenB, onlyMove: false });
+      renderMoves(); render();
+    }
+  }
+  busy = false; statusBar(); render();
+  if (game.game_over()){ endGame(); return; }
+  scheduleAuto();
+}
+
+/* Ray plays your side / both sides */
+function scheduleAuto(){
+  clearTimeout(autoTimer);
+  if (gameOver || reviewing) return;
+  const mode = rayMode();
+  if (mode === 'off') return;
+  if (mode === 'me' && game.turn() !== playerColor) return;
+
+  autoTimer = setTimeout(async () => {
+    if (gameOver || reviewing || busy) return;
+    const mode2 = rayMode();
+    if (mode2 === 'off') return;
+    busy = true; statusBar('thinking');
+    const mv = await engineMove();
+    busy = false; statusBar();
+    if (!mv) return;
+    const from = mv.slice(0,2), to = mv.slice(2,4), promo = mv.length > 4 ? mv[4] : 'q';
+    commitMove(from, to, promo, true);
+  }, 420);
+}
+
+function react(mv, cls){
+  if (!SETTINGS.talk) return;
+  let line = pick(LINES[cls] || LINES.good);
+  if (Math.random() < 0.4){
+    if (mv.flags.includes('c')) line += ' ' + pick(TACKON.cap);
+    else if (mv.san.includes('+')) line += ' ' + pick(TACKON.chk);
+    else line += ' ' + pick(TACKON.quiet);
+  }
+  say(line);
+}
+
+function setRate(chipText, cls, html){
+  const chip = document.getElementById('chip');
+  chip.textContent = chipText;
+  chip.style.background = COL[cls] || '#2a3040';
+  chip.style.color = '#0d1117';
+  document.getElementById('rateTxt').innerHTML = html;
+}
+
+/* ---------------- moves list ---------------- */
+const GLYPH = { best:'★', excellent:'+', good:'·', inaccuracy:'?!', mistake:'?', blunder:'??', forced:'=' };
+
+function renderMoves(){
+  const el = document.getElementById('moves');
+  el.innerHTML = '';
+  if (!history.length){
+    el.innerHTML = '<div class="empty">no moves yet</div>';
+    return;
+  }
+  const rows = Math.ceil(history.length / 2);
+  for (let i = 0; i < rows; i++){
+    const row = document.createElement('div');
+    row.className = 'mv';
+    const n = document.createElement('span');
+    n.className = 'n'; n.textContent = (i + 1) + '.';
+    row.appendChild(n);
+    for (let k = 0; k < 2; k++){
+      const idx = i * 2 + k;
+      const h = history[idx];
+      const s = document.createElement('span');
+      s.className = 'm';
+      if (h){
+        s.textContent = h.san;
+        if (h.cls && h.cls !== 'opp'){
+          const g = document.createElement('span');
+          g.className = 'g ' + h.cls;
+          g.textContent = GLYPH[h.cls] || '·';
+          s.appendChild(g);
+        }
+        s.title = 'revert to this move';
+        s.onclick = () => jumpTo(idx + 1);
+      }
+      row.appendChild(s);
+    }
+    el.appendChild(row);
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+function jumpTo(ply){
+  if (busy || reviewing) return;
+  cancelAuto();
+  const target = history.slice(0, ply);
+  const g = new Chess();
+  for (const h of target){
+    if (!g.move({ from: h.from, to: h.to, promotion: h.promotion || 'q' })) break;
+  }
+  // always land on the player's turn
+  let trimmed = target;
+  if (g.turn() !== playerColor && trimmed.length){
+    const last = trimmed[trimmed.length - 1];
+    g.undo(); trimmed = trimmed.slice(0, -1);
+  }
+  game.load(g.fen());
+  history = trimmed;
+  lastMove = history.length ? { from: history[history.length-1].from, to: history[history.length-1].to } : null;
+  gameOver = false; preEval = null; selected = null; legalForSel = []; clearArrow();
+  document.getElementById('prog').classList.remove('on');
+  renderMoves(); render();
+  say('rewound. no judgement. okay, maybe a little.');
+  refreshBaseline();
+}
+
+async function refreshBaseline(){
+  const fen = game.fen();
+  const res = await analyze(fen, T.grade, T.gradeCap);
+  const w = evalWhite(res, fen);
+  preEval = playerPov(w);
+  paintEval(w);
+}
+
+function cancelAuto(){ clearTimeout(autoTimer); autoTimer = null; }
+
+/* ---------------- undo ---------------- */
+async function undo(){
+  if (busy || reviewing) return;
+  cancelAuto();
+  if (!history.length) return;
+  let plies = 1;
+  if (history[history.length-1].color !== playerColor && history.length >= 2) plies = 2;
+
+  for (let i = 0; i < plies; i++){ game.undo(); history.pop(); }
+  const h = history[history.length-1];
+  lastMove = h ? { from: h.from, to: h.to } : null;
+  gameOver = false; selected = null; legalForSel = []; clearArrow();
+  renderMoves(); render();
+  say('took it back. we don\'t talk about it.');
+  setRate('reverted', 'forced', 'Move undone.');
+  await refreshBaseline();
+  scheduleAuto();
+}
+
+/* ---------------- hint ---------------- */
+async function hint(){
+  if (busy || reviewing || gameOver) return;
+  if (game.turn() !== playerColor) return;
+
+  // second press reuses the first search so the answer can't change under you
+  if (hintArmed && hintCache){
+    const from = hintCache.slice(0,2), to = hintCache.slice(2,4);
+    const tmp = new Chess(game.fen());
+    const mv = tmp.move({ from, to, promotion: hintCache.length > 4 ? hintCache[4] : 'q' });
+    hintArmed = false;
+    say(`fine — ${mv ? mv.san : from + to}. i'm no grandmaster, but i'd play that.`);
+    hintCache = null;
+    return;
+  }
+
+  say('gimme a sec…');
+  const res = await analyze(game.fen(), T.hint, T.hintCap);
+  if (!res.best || res.best === '(none)'){ say("i've got nothing. worrying for both of us."); return; }
+
+  const from = res.best.slice(0,2), to = res.best.slice(2,4);
+  const piece = game.get(from);
+  drawArrow(from, to);
+  hintCache = res.best;
+  hintArmed = true;
+  say(`look at your ${piece ? NAME[piece.type] : 'piece'} on ${from}. there's something there. press hint again to just say it.`);
+}
+
+/* ---------------- game end + deep review ---------------- */
+function endGame(){
+  gameOver = true;
+  busy = false;
+  statusBar();
+  render();
+  let msg;
+  if (game.in_checkmate()){
+    msg = game.turn() === playerColor
+      ? "checkmate. that's you done. hey — i've been there. most days, actually."
+      : "checkmate! you got me. good game, genuinely.";
+  } else if (game.in_draw()) msg = 'draw. fine by me, i was getting nervous.';
+  else msg = "game's over.";
+  if (!SETTINGS.review){
+    say(msg);
+    setRate('done', 'forced', 'New game when you want another.');
+    return;
+  }
+  say(msg + ' give me a minute to go through it properly.');
+  setRate('review', 'forced', 'Analyzing the whole game…');
+  reviewGame();
+}
+
+async function reviewGame(){
+  if (!history.length) return;
+  reviewing = true; cancelReview = false;
+  const prog = document.getElementById('prog'), bar = document.getElementById('progBar');
+  prog.classList.add('on'); bar.style.width = '0%';
+  statusBar();
+
+  const fens = history.map(h => h.fenBefore).concat([game.fen()]);
+  const evals = [];
+
+  for (let i = 0; i < fens.length; i++){
+    if (cancelReview) break;
+    const r = await analyze(fens[i], T.review, T.reviewCap);
+    evals.push(evalWhite(r, fens[i]));
+    bar.style.width = (((i + 1) / fens.length) * 100).toFixed(1) + '%';
+    setRate('review', 'forced', `Move ${i + 1} of ${fens.length}…`);
+  }
+
+  if (!cancelReview){
+    for (let i = 0; i < history.length; i++){
+      if (evals[i] === undefined || evals[i+1] === undefined) continue;
+      const mover = history[i].color;
+      const before = mover === 'w' ? evals[i] : -evals[i];
+      const after  = mover === 'w' ? evals[i+1] : -evals[i+1];
+      const loss = Math.max(0, before - after);
+      const fromSq = history[i].from, toSq = history[i].to;
+      let cls = history[i].onlyMove ? 'forced' : classify(loss, false);
+      if (mover !== playerColor) cls = 'opp';
+      history[i].cls = cls;
+      history[i].cpLoss = loss;
+    }
+  }
+
+  reviewing = false;
+  prog.classList.remove('on');
+  renderMoves();
+
+  if (cancelReview) return;
+  const acc = accuracy();
+  const worst = history.filter(h => h.color === playerColor && h.cls === 'blunder').length;
+  const best = history.filter(h => h.color === playerColor && h.cls === 'best').length;
+
+  paintEval(evals[evals.length-1] !== undefined ? evals[evals.length-1] : 0);
+  say(`done. accuracy <b>${acc === null ? '—' : acc + '%'}</b>, ${best} best move${best === 1 ? '' : 's'}` +
+      (worst ? `, ${worst} blunder${worst === 1 ? '' : 's'}` : ', no blunders') +
+      `. i'm not a pro, but that's a real game.`);
+  setRate('review done', 'best', `Accuracy <b>${acc === null ? '—' : acc + '%'}</b>. Click a move to revisit it.`);
+  statusBar();
+}
+
+function accuracy(){
+  const rated = history.filter(h => h.color === playerColor && h.cls && h.cls !== 'opp');
+  if (!rated.length) return null;
+  const pts = { best:100, excellent:92, good:80, inaccuracy:62, mistake:38, blunder:12, forced:72 };
+  const sum = rated.reduce((s, h) => s + (pts[h.cls] !== undefined ? pts[h.cls] : 60), 0);
+  return Math.round(sum / rated.length);
+}
+
+/* ---------------- new game ---------------- */
+async function newGame(){
+  if (SETTINGS.confirm && history.length && !gameOver){
+    if (!window.confirm('Abandon this game and start a new one?')) return;
+  }
+  cancelReview = true;
+  cancelAuto();
+  playerColor = document.getElementById('color').value;
+  orientation = playerColor;
+  game.reset();
+  history = []; lastMove = null; selected = null; legalForSel = [];
+  gameOver = false; busy = false; hintArmed = false; preEval = null;
+  document.querySelectorAll('.badge').forEach(b => b.remove());
+  document.getElementById('prog').classList.remove('on');
+  clearArrow(); buildBoard(); render(); renderMoves(); paintEval(0);
+  setRate('new game', 'forced', 'Good luck. Sincerely.');
+  say(playerColor === 'w' ? "your move. i'm not a pro — i'm just loud." : "i'll start then. be gentle.");
+  await refreshBaseline();
+  if (game.turn() !== playerColor) await engineReplyOnce();
+  scheduleAuto();
+}
+
+async function engineReplyOnce(){
+  busy = true; statusBar('thinking');
+  const mv = await engineMove();
+  busy = false; statusBar();
+  if (!mv) return;
+  const from = mv.slice(0,2), to = mv.slice(2,4), promo = mv.length > 4 ? mv[4] : 'q';
+  const fenB = game.fen();
+  const m = game.move({ from, to, promotion: promo });
+  if (m){
+    lastMove = { from, to };
+    history.push({ san: m.san, from, to, promotion: promo, color: m.color,
+                   cls: 'opp', cpLoss: 0, fenBefore: fenB, onlyMove: false });
+    renderMoves(); render();
+  }
+}
+
+/* ---------------- chat ---------------- */
+/* Ray has two mouths: the canned one below (always works, zero network)
+   and Groq when a key is present. */
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = 'openai/gpt-oss-20b';
+let chatLog = [];
+let groqBusy = false;
+let proxyKey = false;      // server-side key (secrets-mcp vault) available
+
+/* one place that builds the conversation, whichever mouth answers */
+function rayMessages(text){
+  return [
+    { role: 'system', content: RAY_SYSTEM },
+    { role: 'system', content: 'Current position:\n' + positionContext() },
+    ...chatLog.slice(-8),
+    { role: 'user', content: text }
+  ];
+}
+function pushLog(text, out){
+  chatLog.push({ role: 'user', content: text }, { role: 'assistant', content: out });
+  if (chatLog.length > 24) chatLog = chatLog.slice(-24);
+}
+
+const RAY_SYSTEM = `You are Ray, a chess coach living inside a small browser app.
+You are a club-strength player, roughly 1400. You are NOT a master, NOT an engine, and you say so when it matters.
+Voice: casual, dry, a little self-deprecating. Lowercase is fine. 1-2 short sentences, max 45 words. No lists, no emoji, no markdown.
+You can read the position data you're given. Never invent concrete engine lines or variations you weren't given.
+If asked something you can't know, say so plainly. If the user blunders, be kind but honest. Never pretend to be a real person.`;
+
+function groqKey(){
+  const el = document.getElementById('keyIn');
+  return ((el && el.value) || localStorage.getItem('ray_groq_key') || '').trim();
+}
+
+function setKeyStat(){
+  const el = document.getElementById('keyStat');
+  el.textContent = proxyKey ? 'vault' : groqKey() ? 'groq on' : 'offline';
+  el.className = 'kstat' + (proxyKey || groqKey() ? ' on' : '');
+  el.title = proxyKey ? 'key resolved by the local proxy, never sent to the browser'
+                      : groqKey() ? 'using the key typed in this browser' : 'no key';
+  // the vault proxy holds the key, so the field is dead weight
+  const row = document.querySelector('.keyrow');
+  if (row) row.style.display = proxyKey ? 'none' : 'flex';
+}
+
+function positionContext(){
+  const last = history[history.length - 1];
+  const me = history.filter(h => h.color === playerColor && h.cls && h.cls !== 'opp');
+  const rated = me.length || 0;
+  const acc = accuracy();
+  const bits = [
+    'FEN: ' + game.fen(),
+    'Player is ' + (playerColor === 'w' ? 'White' : 'Black') + ', opponent strength ' + difficulty() + '/20.',
+    'Evaluation: ' + fmt(lastEval || 0) + ' (white point of view).',
+    last ? 'Last move: ' + last.san + (last.cls && last.cls !== 'opp' ? ' — rated ' + last.cls + ', lost ' + (last.cpLoss/100).toFixed(2) + ' pawns.' : ' — made by the opponent.') : 'No moves yet.',
+    rated ? 'Player accuracy so far: ' + acc + '% over ' + rated + ' rated moves.' : '',
+    game.in_check() ? 'Side to move is in check.' : ''
+  ];
+  return bits.filter(Boolean).join('\n');
+}
+
+/* Preferred path: the local proxy resolves the key from the secrets-mcp vault.
+   The browser never sees it. */
+async function askProxy(text){
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: rayMessages(text) })
+    });
+    if (r.status === 503) return { noKey: true };
+    if (!r.ok){
+      const t = await r.text();
+      return { fatal: 'proxy said ' + r.status + ' — ' + t.slice(0, 90) };
+    }
+    const j = await r.json();
+    const out = (j.content || '').trim();
+    if (!out) return { fatal: 'empty reply from groq' };
+    pushLog(text, out);
+    if (j.source === 'vault') proxyKey = true;
+    return { text: out };
+  } catch (e){
+    return { offline: true };      // plain static server, no proxy
+  }
+}
+
+async function askGroq(text){
+  const key = groqKey();
+  if (!key) return null;
+  if (groqBusy) return null;
+  groqBusy = true;
+  try {
+    const r = await fetch(GROQ_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: rayMessages(text),
+        temperature: 0.85,
+        max_completion_tokens: 400,
+        reasoning_effort: 'low'      // gpt-oss burns tokens thinking; keep the reply quick
+      })
+    });
+    if (!r.ok){
+      const body = await r.text();
+      throw new Error(r.status + ' ' + body.slice(0, 160));
+    }
+    const j = await r.json();
+    const out = j && j.choices && j.choices[0] && j.choices[0].message
+      ? (j.choices[0].message.content || '').trim() : '';
+    if (!out) throw new Error('empty reply');
+    pushLog(text, out);
+    return out;
+  } catch (err){
+    console.warn('groq:', err.message);
+    say('groq\'s not answering — <span style="opacity:.7">' + String(err.message).slice(0, 80) + '</span>');
+    return null;
+  } finally {
+    groqBusy = false;
+  }
+}
+
+function reply(text){
+  const t = text.toLowerCase();
+  if (/(why|explain)/.test(t)) return pick([
+    "honestly? i read the engine's number and then talk like i knew it all along.",
+    "the eval bar is the real coach. i'm the personality hire.",
+    "because stockfish says so, and i'm not brave enough to argue."
+  ]);
+  if (/(hint|help|what should)/.test(t)){ hint(); return null; }
+  if (/^(hi|hello|hey|yo)\b/.test(t)) return pick(['hey. good to see you.','yo. let\'s play.','hey — i\'m ray. mid at chess, honest about it.']);
+  if (/(rating|elo|good am i)/.test(t)){
+    const a = accuracy();
+    return 'elo is a lie and i don\'t trust it. ' + (a !== null ? `you're on ${a}% accuracy today.` : 'play some moves and i\'ll tell you.');
+  }
+  if (/(undo|take ?back|revert)/.test(t)) return 'hit revert. i won\'t tell anyone.';
+  if (/(thanks|ty|nice|good)/.test(t)) return pick(['appreciate it.','we\'re both doing our best.','don\'t thank me, thank the eval bar.']);
+  if (/(bad|suck|terrible)/.test(t)) return 'yeah. i know. the coach who can\'t coach. it\'s a whole thing.';
+  if (/(stockfish|engine)/.test(t)) return 'yep, stockfish underneath. i just put a jacket on it.';
+  if (/(review)/.test(t)) return 'finish the game and i\'ll go through every move properly. that\'s the part i\'m good at.';
+  return pick(['i\'m a chess coach, not a chatbot. ask about the position.',
+               'mm. play a move and i\'ll have something real to say.',
+               'noted. now move something.']);
+}
+
+/* ---------------- misc ---------------- */
+function setEng(on){
+  const el = document.getElementById('eng');
+  el.textContent = on ? 'engine ready' : 'engine off';
+  el.className = 'eng' + (on ? ' on' : '');
+}
+let ac = null;
+function click(kind){
+  if (!SETTINGS.sound) return;
+  try {
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.connect(g); g.connect(ac.destination);
+    const t = ac.currentTime;
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(kind === 'cap' ? 180 : 300, t);
+    o.frequency.exponentialRampToValueAtTime(kind === 'cap' ? 110 : 220, t + .06);
+    g.gain.setValueAtTime(.045, t);
+    g.gain.exponentialRampToValueAtTime(.0006, t + .1);
+    o.start(t); o.stop(t + .11);
+  } catch(e){}
+}
+
+/* ---------------- wire ---------------- */
+document.getElementById('hintBtn').onclick = hint;
+document.getElementById('undoBtn').onclick = undo;
+document.getElementById('newBtn').onclick = newGame;
+document.getElementById('flipBtn') && (document.getElementById('flipBtn').onclick = () => {
+  orientation = orientation === 'w' ? 'b' : 'w'; buildBoard(); render();
+});
+document.getElementById('level').oninput = (e) => {
+  const v = parseInt(e.target.value, 10);
+  document.getElementById('lvVal').textContent = diffLabel(v);
+  document.getElementById('lvlTag').textContent = diffName(v).toUpperCase();
+  setSkill(v);
+};
+document.getElementById('level').onchange = (e) => {
+  say(`fine, ${diffName(parseInt(e.target.value, 10))} it is.`);
+};
+document.getElementById('ray').onchange = (e) => {
+  if (e.target.value !== 'off') say(e.target.value === 'me' ? 'okay, i\'ll play for you. try not to heckle.' : 'both sides? fine, i\'ll put on a show.');
+  else say('back to you then.');
+  render(); scheduleAuto();
+};
+document.getElementById('chatBtn').onclick = sendChat;
+document.getElementById('chatIn').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+/* settings wiring */
+const SETMAP = { setThreats:'threats', setDots:'dots', setCoords:'coords', setSound:'sound',
+                 setEval:'eval', setTalk:'talk', setReview:'review', setConfirm:'confirm' };
+Object.keys(SETMAP).forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.onchange = () => {
+    SETTINGS[SETMAP[id]] = el.checked;
+    saveSettings();
+    applySettings();
+    render();
+  };
+});
+document.querySelectorAll('.theme-dot').forEach(btn => {
+  btn.onclick = () => {
+    SETTINGS.theme = btn.dataset.theme;
+    saveSettings();
+    applySettings();
+  };
+});
+
+const keyEl = document.getElementById('keyIn');
+keyEl.value = localStorage.getItem('ray_groq_key') || '';
+keyEl.addEventListener('input', () => {
+  const k = keyEl.value.trim();
+  if (k) localStorage.setItem('ray_groq_key', k); else localStorage.removeItem('ray_groq_key');
+  setKeyStat();
+});
+setKeyStat();
+
+async function sendChat(){
+  const inp = document.getElementById('chatIn');
+  const v = inp.value.trim(); if (!v) return;
+  inp.value = '';
+
+  // instant local answer for a bare request, everything else goes to Ray
+  if (/^(hint|help|\?+|h)$/i.test(v) || /\bgive me a hint\b/i.test(v)){ hint(); return; }
+
+  say('<span style="opacity:.55">…</span>');
+
+  // 1. vault proxy  2. a key typed in this browser  3. canned lines
+  const r = await askProxy(v);
+  if (r.text){ saySafe(r.text); return; }
+  if (r.fatal){ say(r.fatal); return; }
+
+  if (groqKey()){
+    const out = await askGroq(v);
+    if (out) { saySafe(out); return; }
+  }
+  const r2 = reply(v);
+  if (r2) say(r2);
+}
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const k = e.key.toLowerCase();
+  if (k === 'h') hint();
+  if (k === 'u') undo();
+  if (k === 'n') newGame();
+  if (k === 'f'){ orientation = orientation === 'w' ? 'b' : 'w'; buildBoard(); render(); }
+  if (k === 't'){ SETTINGS.threats = !SETTINGS.threats; saveSettings(); applySettings(); render(); }
+});
+
+document.getElementById('avatar').innerHTML = `<svg viewBox="0 0 48 48" width="46" height="46">
+  <rect width="48" height="48" fill="#2b3448"/>
+  <path d="M9 22c0-8 7-13 15-13s15 5 15 13" fill="#3f4d6b"/>
+  <rect x="6" y="20" width="36" height="6" rx="3" fill="#5d6f92"/>
+  <rect x="18" y="23" width="12" height="5" rx="2" fill="#8296bd"/>
+  <circle cx="24" cy="33" r="10.5" fill="#e9bb91"/>
+  <circle cx="20" cy="32" r="1.7" fill="#28303d"/>
+  <circle cx="28" cy="32" r="1.7" fill="#28303d"/>
+  <path d="M20 37.5c2.4 1.8 5.6 1.8 8 0" stroke="#7d4b33" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+  <path d="M13 45c2.4-4.8 6.6-6.8 11-6.8s8.6 2 11 6.8" fill="#3f6b4a"/>
+</svg>`;
+
+/* ---------------- boot ---------------- */
+buildBoard(); render(); renderMoves();
+document.getElementById('lvVal').textContent = diffLabel(difficulty());
+document.getElementById('lvlTag').textContent = diffName(difficulty()).toUpperCase();
+applySettings();
+
+// is the vault proxy up? if so the browser never needs a key at all
+fetch('/api/health').then(r => r.ok ? r.json() : null).then(j => {
+  if (j && j.key){ proxyKey = true; setKeyStat(); }
+}).catch(() => {});
+
+setRate('booting', 'forced', 'Warming up the engine…');
+say('One sec — starting stockfish. I\'m not fast, I\'m honest.');
+
+initEngine().then(async () => {
+  say("Engine's alive. I'm Ray — decent club player, much better heckler. Your move.");
+  setRate('ready', 'forced', "Make a move — I'll rate it instantly.");
+  const res = await analyze(game.fen(), T.grade, T.gradeCap);
+  const w = evalWhite(res, game.fen());
+  preEval = playerPov(w);
+  paintEval(w);
+  if (game.turn() !== playerColor) engineReplyOnce();
+  scheduleAuto();
+}).catch(() => {
+  say('Engine failed to start. That\'s on me — it needs to be served over http, not opened as a file.');
+  setEng(false);
+});
+</script>
+</body>
+</html>
