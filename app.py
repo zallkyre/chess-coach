@@ -46,6 +46,32 @@ def data_dir() -> Path:
     return d
 
 
+def engine_path():
+    """Stockfish is not shipped in the app bundle - the installer fetches it
+    from the official releases. Look where it could reasonably live."""
+    cands = []
+    env = os.environ.get("CHESSCOACH_ENGINE")
+    if env:
+        cands.append(Path(env))
+    if getattr(sys, "frozen", False):
+        cands.append(Path(sys.executable).parent / "engine" / "stockfish.exe")
+        cands.append(Path(sys.executable).parent / "stockfish.exe")
+    here = Path(__file__).resolve().parent
+    cands += [here / "engine" / "stockfish.exe", here / "stockfish.exe"]
+    cands.append(data_dir() / "engine" / "stockfish.exe")
+    cands.append(res("engine", "stockfish.exe"))
+    for c in cands:
+        try:
+            if c.is_file() and c.stat().st_size > 1_000_000:
+                return c
+        except OSError:
+            pass
+    from shutil import which
+
+    found = which("stockfish")
+    return Path(found) if found else None
+
+
 # secrets-mcp lives next door in the dev tree, bundled inside the exe
 for candidate in (Path(__file__).resolve().parent.parent / "secrets-mcp", res()):
     if (candidate / "secrets_mcp").is_dir() and str(candidate) not in sys.path:
@@ -403,7 +429,14 @@ class CoachApp:
         self._drag = None
 
         self.settings = self.load_settings()
-        self.engine = Engine(res("engine", "stockfish.exe"))
+        exe = engine_path()
+        if exe is None:
+            raise RuntimeError(
+                "Stockfish was not found.\n\n"
+                "Re-run the installer, or drop stockfish.exe in:\n"
+                + str(data_dir() / "engine") + "\n\n"
+                "Official builds: https://github.com/official-stockfish/Stockfish/releases")
+        self.engine = Engine(exe)
         self.build_ui()
         self.new_game(first=True)
 
