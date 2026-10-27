@@ -109,3 +109,7 @@ drop it in `engine/`.
 ## License
 
 MIT for this app. Stockfish is GPLv3 and is used unmodified.
+
+---
+
+**LLM guide** — Browser chess with instant move grading, threat arrows, and a Groq-backed coach · Stack: Python · Entry: `app.py` · Run: `open index.html` · License: none - ask first
