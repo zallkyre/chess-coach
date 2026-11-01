@@ -26,7 +26,7 @@ from tkinter import ttk, messagebox
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 APP = "Chess Coach"
-NOISE = 25                     # cp we do not count against you
+NOISE = 15                     # cp we do not count against you
 GRADE_DEPTH = 14
 MOVE_TIME_MS = 150
 REVIEW_DEPTH = 18
@@ -156,13 +156,16 @@ class Engine:
     def skill(self, level: int):
         self.send(f"setoption name Skill Level value {max(0, min(20, int(level)))}")
 
-    def analyze(self, fen: str, depth: int, timeout=12.0):
-        """Returns (cp_white, mate_white, best_uci). Always bounded."""
+    def _search(self, fen: str, depth: int, timeout=12.0, moves=None, multipv=1):
+        """One bounded search. Returns lines, best first:
+        [{"cp": white-view int, "mate": int | None, "uci": str}]"""
         with self.lock:
-            cp, mate, best = 0, None, None
+            found = {}
             self.skill(20)                     # fuzzed scores would poison grading
+            self.send(f"setoption name MultiPV value {max(1, int(multipv))}")
             self.send("position fen " + fen)
-            self.send(f"go depth {depth}")
+            go = f"go depth {depth}" + (f" searchmoves {moves}" if moves else "")
+            self.send(go)
             end = time.time() + timeout
             while time.time() < end:
                 try:
@@ -171,20 +174,56 @@ class Engine:
                     break
                 if line.startswith("info"):
                     m = re.search(r"score (cp|mate) (-?\d+)", line)
-                    if m:
-                        if m.group(1) == "cp":
-                            cp, mate = int(m.group(2)), None
-                        else:
-                            mate = int(m.group(2))
+                    if not m:
+                        continue
+                    idx_m = re.search(r"multipv (\d+)", line)
+                    idx = int(idx_m.group(1)) if idx_m else 1
+                    e = found.setdefault(idx, {"cp": 0, "mate": None, "uci": None})
+                    if m.group(1) == "cp":
+                        e["cp"], e["mate"] = int(m.group(2)), None
+                    else:
+                        e["mate"], e["cp"] = int(m.group(2)), None
+                    pv_m = re.search(r" pv (\S+)", line)
+                    if pv_m:
+                        e["uci"] = pv_m.group(1)
                 elif line.startswith("bestmove"):
-                    best = line.split()[1] if len(line.split()) > 1 else None
                     break
+            if multipv > 1:
+                self.send("setoption name MultiPV value 1")
             side = "w" if fen.split()[1] == "w" else "b"
-            if mate is not None:
-                val = 10000 - abs(mate) * 10 if mate > 0 else -10000 + abs(mate) * 10
-            else:
-                val = cp
-            return (val if side == "w" else -val), mate, best
+            out = []
+            for idx in sorted(found):
+                e = found[idx]
+                mate = e["mate"]
+                if mate is not None:
+                    val = 10000 - abs(mate) * 10 if mate > 0 else -10000 + abs(mate) * 10
+                else:
+                    val = e["cp"] or 0
+                out.append({"cp": val if side == "w" else -val,
+                            "mate": mate, "uci": e["uci"]})
+            return out
+
+    def analyze(self, fen: str, depth: int, timeout=12.0):
+        """Returns (cp_white, mate_white, best_uci). Always bounded."""
+        lines = self._search(fen, depth, timeout)
+        if not lines:
+            return 0, None, None
+        top = lines[0]
+        return top["cp"], top["mate"], top["uci"]
+
+    def grade(self, fen: str, uci: str, depth: int, timeout=10.0):
+        """Score the played move against the engine's best from the same root
+        and depth. Same-root comparison keeps tempo out of the loss; comparing
+        the position before the move with the one after it cannot."""
+        lines = self._search(fen, depth, timeout, multipv=2)
+        best = lines[0] if lines else {"cp": 0, "mate": None, "uci": None}
+        second = lines[1] if len(lines) > 1 else None
+        if best.get("uci") == uci:
+            played = best                     # already the top move
+        else:
+            played_lines = self._search(fen, depth, timeout, moves=uci)
+            played = played_lines[0] if played_lines else None
+        return {"best": best, "second": second, "played": played}
 
     def play(self, fen: str, level: int, depth: int | None = None, ms: int = MOVE_TIME_MS):
         """Pick a move at a given strength. Never full strength."""
@@ -358,6 +397,12 @@ def ask_ray(provider: str, model: str, messages, timeout=45) -> str:
 # static coach lines
 # --------------------------------------------------------------------------
 LINES = {
+    "brilliant": ["you gave material away and it works. i'm not built for this.",
+                  "brilliant. i would not have seen that on a good day.",
+                  "a real sacrifice. i need a moment."],
+    "great": ["that's the only move that holds. impressive.",
+              "great move — everything else loses something.",
+              "the one move. you found it. rude, frankly."],
     "best": ["that's the move. i didn't calculate it, i just agree with the engine.",
              "best on the board. ok, show-off.",
              "exactly what i'd have played. after checking. twice.",
@@ -367,6 +412,12 @@ LINES = {
                   "that's a move i'd find ten minutes later in the shower."],
     "good": ["fine move. not scary, not bad.", "solid. nothing to yell about.",
              "yeah, that works. you're not losing anything."],
+    "book": ["theory. i've read a book. one book.",
+             "that's mainline. boring in a trustworthy way.",
+             "opening knowledge. the engine agrees and so does the book."],
+    "miss": ["you had a win there and let it go. sorry.",
+             "that's a miss — the tactic was right in front of you.",
+             "half of me wants to tell you what it was. the other half is laughing."],
     "inaccuracy": ["hmm. not terrible, not great. there was something better.",
                    "slight wobble. i'm no grandmaster but that's loose.",
                    "you gave away a little something. not a disaster."],
@@ -378,14 +429,17 @@ LINES = {
                 "big one. don't panic — revert is right there."],
     "forced": ["only move available. nothing to rate."],
 }
-LABEL = {"best": "Best", "excellent": "Excellent", "good": "Good",
-         "inaccuracy": "Inaccuracy", "mistake": "Mistake", "blunder": "Blunder",
-         "forced": "Forced"}
-COL = {"best": "#6fbf5b", "excellent": "#41a899", "good": "#8bbf6a",
-       "inaccuracy": "#dfbe57", "mistake": "#df9455", "blunder": "#dd5a5a",
-       "forced": "#8a93a6"}
-GLYPH = {"best": "★", "excellent": "+", "good": "·", "inaccuracy": "?!",
-         "mistake": "?", "blunder": "??", "forced": "="}
+LABEL = {"brilliant": "Brilliant", "great": "Great", "best": "Best",
+         "excellent": "Excellent", "good": "Good", "book": "Book",
+         "inaccuracy": "Inaccuracy", "mistake": "Mistake", "miss": "Miss",
+         "blunder": "Blunder", "forced": "Forced"}
+COL = {"brilliant": "#26c2a3", "great": "#5b9bd5", "best": "#7fb14a",
+       "excellent": "#96bc4b", "good": "#8fae84", "book": "#a4835f",
+       "inaccuracy": "#f2c231", "mistake": "#e08a2e", "miss": "#e0584a",
+       "blunder": "#cf4b42", "forced": "#8a93a6"}
+GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "✓",
+         "good": "·", "book": "≡", "inaccuracy": "?!", "mistake": "?",
+         "miss": "✗", "blunder": "??", "forced": "="}
 
 THEMES = {
     "green": ("#e9edd6", "#6f9250"),
@@ -402,19 +456,127 @@ TEXT = "#e8ebf1"
 MUTED = "#98a1b3"
 
 
-def classify(raw_loss, is_best):
+def classify(raw_loss, is_best=False):
     loss = max(0, raw_loss - NOISE)
-    if is_best or loss <= 15:
+    if is_best:
         return "best"
-    if loss <= 55:
+    if loss <= 20:
         return "excellent"
-    if loss <= 110:
+    if loss <= 60:
         return "good"
-    if loss <= 210:
+    if loss <= 120:
         return "inaccuracy"
-    if loss <= 400:
+    if loss <= 250:
         return "mistake"
     return "blunder"
+
+
+PIECE_VALUE = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
+               chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
+
+
+def is_sacrifice(board: chess.Board, move: chess.Move) -> bool:
+    """True when the move really offers material: the piece lands on a square
+    the opponent can take, and taking it wins material."""
+    piece = board.piece_at(move.from_square)
+    if piece is None or piece.piece_type == chess.KING:
+        return False
+    gain = 0
+    if board.is_capture(move):
+        victim = board.piece_at(move.to_square)
+        gain = PIECE_VALUE.get(victim.piece_type, 1) if victim else 1
+    if move.promotion:
+        gain += PIECE_VALUE.get(move.promotion, 0) - 1
+    if PIECE_VALUE.get(piece.piece_type, 0) - gain < 2:
+        return False
+    after = board.copy()
+    after.push(move)
+    sq, them, mine = move.to_square, not piece.color, piece.color
+    attackers = after.attackers(them, sq)
+    if not attackers:
+        return False
+    defenders = after.attackers(mine, sq)
+    if not defenders:
+        return True
+    cheapest_att = min(PIECE_VALUE.get(after.piece_at(s).piece_type, 0) for s in attackers)
+    cheapest_def = min(PIECE_VALUE.get(after.piece_at(s).piece_type, 0) for s in defenders)
+    return cheapest_att < cheapest_def
+
+
+# common mainlines, used only for the "Book" badge
+BOOK_LINES = """
+e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O Be7 Re1 b5 Bb3 d6 c3 O-O
+e4 e5 Nf3 Nc6 Bc4 Bc5 c3 Nf6 d3 d6
+e4 e5 Nf3 Nc6 Bc4 Nf6 Ng5 d5 exd5 Na5
+e4 e5 Nf3 Nc6 d4 exd4 Nxd4 Nf6 Nc3 Bb4
+e4 e5 Nf3 Nc6 Nc3 Nf6 Bb5 Bb4
+e4 e5 Nf3 Nf6 Nxe5 d6 Nf3 Nxe4 d4 d5
+e4 e5 Nc3 Nf6 f4 d5 fxe5 Nxe4
+e4 e5 f4 exf4 Nf3 g5
+e4 e5 Bc4 Nf6 d3 c6 Nf3 d5
+e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6
+e4 c5 Nf3 Nc6 d4 cxd4 Nxd4 g6
+e4 c5 Nc3 Nc6 g3 g6 Bg2 Bg7
+e4 c5 c3 d5 exd5 Qxd5 d4 Nf6
+e4 e6 d4 d5 Nc3 Nf6 Bg5 Be7
+e4 e6 d4 d5 Nd2 Nf6 e5 Nfd7
+e4 e6 d4 d5 exd5 exd5 Nf3 Nf6
+e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5
+e4 c6 d4 d5 e5 c5
+e4 d5 exd5 Qxd5 Nc3 Qa5 d4 Nf6
+e4 d5 exd5 Nf6 d4 Nxd5 Nf3 g6
+e4 Nf6 e5 Nd5 d4 d6 Nf3 dxe5 Nxe5 c6
+e4 g6 d4 Bg7 Nc3 d6 f4 Nf6
+e4 d6 d4 Nf6 Nc3 g6 f4 Bg7
+d4 d5 c4 e6 Nc3 Nf6 Bg5 Be7 e3 O-O
+d4 d5 c4 c6 Nf3 Nf6 Nc3 e6 Bg5 dxc4
+d4 d5 c4 dxc4 Nf3 Nf6 e3 e6 Bxc4 c5
+d4 d5 c4 e5 dxe5 d4 Nf3 Nc6
+d4 d5 Nf3 Nf6 c4 e6
+d4 d5 Bf4 Nf6 e3 e6 Nf3 c5
+d4 Nf6 c4 g6 Nc3 Bg7 e4 d6 Nf3 O-O
+d4 Nf6 c4 e6 Nc3 Bb4 e3 O-O
+d4 Nf6 c4 e6 Nf3 b6 g3 Bb7 Bg2 Be7
+d4 Nf6 c4 c5 d5 b5
+d4 f5 g3 Nf6 Bg2 e6 Nf3 Be7
+c4 e5 Nc3 Nf6 Nf3 Nc6 g3 d5
+c4 c5 Nf3 Nf6 d4 cxd4 Nxd4 e6
+Nf3 d5 g3 Nf6 Bg2 e6 O-O Be7
+Nf3 Nf6 c4 e6 g3 d5 Bg2 Be7
+"""
+
+
+def _book_index():
+    out = set()
+    for line in BOOK_LINES.strip().splitlines():
+        toks = line.split()
+        for i in range(1, len(toks) + 1):
+            out.add(tuple(toks[:i]))
+    return out
+
+
+BOOK_MOVES = _book_index()
+
+
+def grade_move(loss, is_best, gap, best_cp, played_cp, best_mate, sac, book, only):
+    """The badge for one move: brilliant > great > best > excellent > good >
+    book > inaccuracy > mistake > miss > blunder."""
+    if only:
+        return "forced"
+    if book:
+        return "book"
+    had_win = (best_mate is not None and best_mate > 0) or best_cp >= 200
+    if had_win and not is_best and played_cp < 50:
+        return "miss"
+    if is_best:
+        if played_cp >= 9900:               # mate on the board, nothing to style
+            return "best"
+        if sac:
+            return "brilliant"
+        return "great" if gap >= 150 else "best"
+    if sac and loss <= 30:
+        return "brilliant"
+    return classify(loss, False)
 
 
 def fmt_eval(cp):
@@ -1024,14 +1186,38 @@ class CoachApp:
 
         self.animate(move, start_grading)
 
+    def rate(self, fen, move, only, depth, sans):
+        """Grade one move in the position it was played from.
+
+        Returns (badge, loss, cp_white). The loss is the engine's own score
+        for the best move minus its score for the move you played, both from
+        the same root at the same depth, so tempo is not counted as a loss."""
+        g = self.engine.grade(fen, move.uci(), depth)
+        sign = 1 if self.player_color == chess.WHITE else -1
+        best = g["best"]
+        played = g["played"] or best
+        best_cp = sign * best["cp"]
+        played_cp = sign * played["cp"]
+        second = g["second"]
+        gap = max(0, best_cp - sign * second["cp"]) if second else 0
+        is_best = best["uci"] == move.uci()
+        loss = max(0, best_cp - played_cp)
+        cls = grade_move(loss=loss, is_best=is_best, gap=gap, best_cp=best_cp,
+                         played_cp=played_cp, best_mate=best["mate"],
+                         sac=is_sacrifice(chess.Board(fen), move),
+                         book=tuple(sans) in BOOK_MOVES, only=only)
+        return cls, loss, played["cp"]
+
     def _grade_then_reply(self, move, san, only):
-        fen = self.board.fen()
-        cp_white, _, best = self.engine.analyze(fen, GRADE_DEPTH)
-        post_player = cp_white if self.player_color == chess.WHITE else -cp_white
-        is_best = best == move.uci()
-        loss = max(0, self.pre_eval - post_player)
-        cls = "forced" if only else classify(loss, is_best)
-        self.pre_eval = post_player
+        rec = self.stack[-1]
+        sans = [r["san"] for r in self.stack]        # includes this move
+        try:
+            cls, loss, cp_white = self.rate(rec["fen"], move, only,
+                                            GRADE_DEPTH, sans)
+        except Exception:
+            cls, loss, cp_white = "good", 0, self.last_eval
+        sign = 1 if self.player_color == chess.WHITE else -1
+        self.pre_eval = sign * cp_white
         self.ui(lambda: self.after_grade(cp_white, cls, loss, move))
 
     def after_grade(self, cp_white, cls, loss, move):
@@ -1126,12 +1312,18 @@ class CoachApp:
     def set_rating(self, cls, loss):
         self.chip.configure(text=LABEL.get(cls, "?"), bg=COL.get(cls, "#2a3040"),
                             fg="#0d1117")
-        if cls == "forced":
-            txt = "only legal move"
-        elif cls == "best":
-            txt = "engine's top choice"
+        notes = {"brilliant": "sacrifice, and it works",
+                 "great": "only move that held",
+                 "best": "engine's top choice",
+                 "excellent": "nearly the top pick",
+                 "good": "fine, small cost",
+                 "book": "opening theory",
+                 "miss": "you had a win there",
+                 "forced": "only legal move"}
+        if cls in notes:
+            txt = notes[cls]
         else:
-            txt = f"cost you {loss/100:.2f} pawns"
+            txt = f"cost you {min(loss, 1500)/100:.2f} pawns"
         self.rate_lbl.configure(text=txt)
 
     def end_game(self):
@@ -1181,22 +1373,22 @@ class CoachApp:
 
     def _review(self):
         self.reviewing = True
-        positions = [s["fen"] for s in self.stack] + [self.board.fen()]
-        evals = []
-        for i, fen in enumerate(positions):
-            cp, _, _ = self.engine.analyze(fen, REVIEW_DEPTH, timeout=6)
-            evals.append(cp)
-            self.ui(lambda i=i: self._review_progress(i + 1, len(positions)))
+        total = len(self.stack)
         for i, rec in enumerate(self.stack):
-            if i + 1 >= len(evals):
-                break
-            mover_white = rec["color"] == chess.WHITE
-            before = evals[i] if mover_white else -evals[i]
-            after = evals[i + 1] if mover_white else -evals[i + 1]
-            loss = max(0, before - after)
-            rec["loss"] = loss
-            rec["cls"] = ("forced" if rec["only"] else classify(loss, False)) \
-                if mover_white == (self.player_color == chess.WHITE) else "opp"
+            if rec["color"] != self.player_color:
+                rec["cls"] = "opp"
+                rec["loss"] = 0
+                self.ui(lambda i=i: self._review_progress(i + 1, total))
+                continue
+            sans = [r["san"] for r in self.stack[:i + 1]]
+            try:
+                cls, loss, _ = self.rate(rec["fen"], rec["move"], rec["only"],
+                                         REVIEW_DEPTH, sans)
+                rec["cls"] = cls
+                rec["loss"] = loss
+            except Exception:
+                rec["cls"] = rec["cls"] or "good"
+            self.ui(lambda i=i: self._review_progress(i + 1, total))
         self.reviewing = False
         self.ui(self.after_review)
 
@@ -1214,8 +1406,9 @@ class CoachApp:
         self.render()
 
     def accuracy(self):
-        pts = {"best": 100, "excellent": 92, "good": 80, "inaccuracy": 62,
-               "mistake": 38, "blunder": 12, "forced": 72}
+        pts = {"brilliant": 100, "great": 97, "best": 100, "excellent": 90,
+               "good": 74, "book": 92, "inaccuracy": 60, "mistake": 35,
+               "miss": 25, "blunder": 10, "forced": 72}
         rated = []
         for s in self.stack:
             mine = s["color"] == self.player_color
@@ -1343,13 +1536,8 @@ class CoachApp:
             t.insert("end", "  ")
             if rec["color"] == chess.BLACK:
                 t.insert("end", "\n")
-        t.tag_configure("best", foreground=COL["best"])
-        t.tag_configure("excellent", foreground=COL["excellent"])
-        t.tag_configure("good", foreground=COL["good"])
-        t.tag_configure("inaccuracy", foreground=COL["inaccuracy"])
-        t.tag_configure("mistake", foreground=COL["mistake"])
-        t.tag_configure("blunder", foreground=COL["blunder"])
-        t.tag_configure("forced", foreground=COL["forced"])
+        for k, colr in COL.items():
+            t.tag_configure(k, foreground=colr)
         t.tag_configure("opp", foreground="#9aa3b5")
         t.configure(state="disabled")
         t.see("end")

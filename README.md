@@ -30,8 +30,10 @@ else is touched.
 
 ## What it does
 
-- **Instant move rating**: Best / Excellent / Good / Inaccuracy / Mistake /
-  Blunder, the pawns it cost you, and a colored chip
+- **Instant move rating**: Brilliant / Great / Best / Excellent / Good / Book /
+  Inaccuracy / Mistake / Miss / Blunder, the pawns it cost you, and a colored
+  chip. The loss is measured at one root: the engine's score for its best move
+  minus its score for yours, so tempo is never counted as a mistake
 - **Threat arrows**: real legal attack generation, not a guess. Enemy pieces
   that can take something of yours get a red arrow, worst victim first
 - **Hint**: first press points at the piece, second press names the move
