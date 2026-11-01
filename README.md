@@ -42,6 +42,9 @@ else is touched.
 - **Post-game review**: an **Analyze game** button lights up when the game
   ends. It re-analyzes every position deeper than the live pass, fills in the
   whole move list, and gives you an accuracy number
+- **Side buttons** next to the board: **LOCK** pins the window on top until you
+  press it again, **FEN** copies the position, the theme button cycles board
+  colors, **FULL** maximizes the window
 - **Captured material**, board themes, coordinates, eval bar, all toggleable
 
 ## Keys and providers

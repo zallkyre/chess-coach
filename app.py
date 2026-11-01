@@ -31,6 +31,7 @@ GRADE_DEPTH = 14
 MOVE_TIME_MS = 150
 REVIEW_DEPTH = 18
 SLIDE_MS = 170
+SIDEBAR_W = 46                 # width of the button strip left of the board
 
 
 def depth_for(level: int) -> int:
@@ -630,7 +631,7 @@ class CoachApp:
     def load_settings(self):
         d = {"difficulty": 5, "theme": "green", "threats": True, "dots": True,
              "coords": True, "evalbar": True, "talk": True, "review": True,
-             "provider": "groq", "model": ""}
+             "locked": False, "provider": "groq", "model": ""}
         try:
             d.update(json.loads((data_dir() / "settings.json").read_text()))
         except Exception:
@@ -686,8 +687,11 @@ class CoachApp:
 
         self.build_header(left)
 
-        boardrow = tk.Frame(left, bg=BG)
-        boardrow.pack()
+        boardarea = tk.Frame(left, bg=BG)
+        boardarea.pack()
+        self.build_sidebar(boardarea)
+        boardrow = tk.Frame(boardarea, bg=BG)
+        boardrow.pack(side="left")
         self.evalbar = tk.Canvas(boardrow, width=16, height=self.SQ * 8, bg="#0a0c11",
                                  highlightthickness=1, highlightbackground=LINE)
         self.evalbar.pack(side="left", padx=(0, 6))
@@ -704,14 +708,82 @@ class CoachApp:
 
         self.build_panel(right)
         self.bind_keys()
+        self.root.attributes("-topmost", bool(self.settings.get("locked")))
+        self._sync_side_buttons()
         self.root.after(25, self._pump)
         self.render()
+
+    def build_sidebar(self, parent):
+        """Slim vertical strip of window/board controls next to the board."""
+        bar = tk.Frame(parent, bg=BG, width=SIDEBAR_W)
+        bar.pack(side="left", fill="y", padx=(0, 8))
+        bar.pack_propagate(False)
+        self.side_btns = {}
+        for key, text, cmd in (("lock", "LOCK", self.toggle_lock),
+                               ("fen", "FEN", self.copy_fen),
+                               ("theme", "GREEN", self.cycle_theme),
+                               ("full", "FULL", self.toggle_full)):
+            b = tk.Button(bar, text=text, command=cmd, bg=CARD2, fg=TEXT,
+                          relief="flat", font=("Consolas", 7, "bold"), bd=0,
+                          cursor="hand2", pady=7,
+                          activebackground="#2d3341", activeforeground=TEXT)
+            b.pack(fill="x", pady=(0, 5))
+            self.side_btns[key] = b
+
+    def _sync_side_buttons(self):
+        if not getattr(self, "side_btns", None):
+            return
+        locked = bool(self.settings.get("locked"))
+        self.side_btns["lock"].configure(
+            text="LOCK", bg="#7ec96b" if locked else CARD2,
+            fg="#0d1117" if locked else TEXT)
+        fen = self.side_btns["fen"]
+        if fen.cget("text") != "COPIED":
+            fen.configure(text="FEN", bg=CARD2, fg=TEXT)
+        self.side_btns["theme"].configure(
+            text=str(self.settings.get("theme", "green")).upper()[:6],
+            bg=CARD2, fg=TEXT)
+        self.side_btns["full"].configure(text="FULL", bg=CARD2, fg=TEXT)
+
+    def toggle_lock(self):
+        """Pin the window above everything else until the button is pressed again."""
+        locked = bool(self.root.attributes("-topmost"))
+        self.root.attributes("-topmost", not locked)
+        self.settings["locked"] = not locked
+        self.save_settings()
+        self._sync_side_buttons()
+        self.say("locked on top. i'll hover over your other windows."
+                 if not locked else "unlocked. i'll sit quietly like a normal app.")
+
+    def copy_fen(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.board.fen())
+        self.side_btns["fen"].configure(text="COPIED", bg="#7ec96b", fg="#0d1117")
+        self.say("position copied. paste it anywhere that wants a FEN.")
+        self.root.after(900, self._sync_side_buttons)
+
+    def cycle_theme(self):
+        names = list(THEMES)
+        cur = self.settings.get("theme")
+        nxt = names[(names.index(cur) + 1) % len(names)] if cur in names else names[0]
+        self.settings["theme"] = nxt
+        if hasattr(self, "theme_var"):
+            self.theme_var.set(nxt)
+        self.save_settings()
+        self.canvas.configure(bg=THEMES[nxt][0])
+        self.render()
+        self._sync_side_buttons()
+        self.say(f"board theme: {nxt}.")
+
+    def toggle_full(self):
+        self.root.state("normal" if self.root.state() == "zoomed" else "zoomed")
+        self._sync_side_buttons()
 
     def build_header(self, parent):
         w, h = self.SQ * 8 + 22, 168
         cv = tk.Canvas(parent, width=w, height=h, highlightthickness=1,
                        highlightbackground=LINE, bg=CARD, bd=0)
-        cv.pack(pady=(0, 10))
+        cv.pack(pady=(0, 10), anchor="w", padx=(SIDEBAR_W + 8, 0))
         try:
             img = Image.open(res("assets", "banner-full.jpg")).convert("RGB")
             img = ImageOps.fit(img, (w * 2, h * 2), method=Image.LANCZOS)
@@ -739,7 +811,7 @@ class CoachApp:
         cv.create_text(72, h - 22, text="stockfish underneath, opinions on top",
                        anchor="w", fill="#b9c2d2", font=("Segoe UI", 8))
         self.turn_lbl = tk.Label(parent, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
-        self.turn_lbl.pack(anchor="w", pady=(0, 6))
+        self.turn_lbl.pack(anchor="w", pady=(0, 6), padx=(SIDEBAR_W + 8, 0))
 
     def card(self, parent, **kw):
         f = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=LINE)
