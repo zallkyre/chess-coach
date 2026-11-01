@@ -44,7 +44,9 @@ else is touched.
   walks the game with ◀ / ▶ (or ← →), showing one position at a time with the
   badge, the pawns it cost, and a green arrow where the engine would have gone.
   **Both sides are graded**, so Ray gets called out too, and the counter shows
-  your accuracy next to his. **auto** replays the whole thing, Esc closes it
+  your accuracy next to his. The walkthrough opens the moment you press
+  Analyze and each ply fills in as it is graded, so you never wait for the
+  whole pass. **auto** replays the whole thing, Esc closes it
 - **Side buttons** next to the board: **LOCK** pins the window on top until you
   press it again, **FEN** copies the position, the theme button cycles board
   colors, **FULL** maximizes the window

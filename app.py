@@ -1483,18 +1483,24 @@ class CoachApp:
         self.reviewing = True
         self.set_analyze_state("Analyzing…", enabled=False)
         self.chip.configure(text="review…", bg="#2a3040", fg="#aab3c4")
-        self.say("going through the whole game. give me a minute.")
+        self.say("going through the whole game. you can already step through it.")
+        # open the walkthrough right away; plies fill in as they are graded
+        self.start_review()
         threading.Thread(target=self._review, args=(self.epoch,),
                          daemon=True).start()
 
     def _review_progress(self, done, total, epoch):
         if epoch != self.epoch:
             return
-        self.chip.configure(text=f"review {done}/{total}")
         try:
             self.btn_analyze.configure(text=f"Analyzing {done}/{total}")
         except Exception:
             pass
+        if self.review_mode and self.review_ply == done - 1:
+            # the ply on screen just got graded - refresh it without moving
+            self.step_review(absolute=self.review_ply, quiet=True)
+        elif not self.review_mode:
+            self.chip.configure(text=f"review {done}/{total}")
 
     def _review(self, epoch):
         self.reviewing = True
@@ -1534,7 +1540,10 @@ class CoachApp:
         if racc is not None:
             bits.append(f"ray {racc}%")
         self.rate_lbl.configure(text=" · ".join(bits) if bits else "done")
-        self.start_review()
+        if self.review_mode:
+            self.step_review(absolute=self.review_ply, quiet=True)
+        else:
+            self.start_review()
 
     # ---------------- step-through review ----------------
     def start_review(self):
@@ -1562,7 +1571,7 @@ class CoachApp:
         self.say("review closed. analyze again whenever you want a rerun.")
         self.render()
 
-    def step_review(self, delta=0, absolute=None):
+    def step_review(self, delta=0, absolute=None, quiet=False):
         if not self.stack:
             return
         i = absolute if absolute is not None else self.review_ply + delta
@@ -1578,10 +1587,15 @@ class CoachApp:
         self.board = board
         self.last_move = rec["move"]
         self.game_over = True
-        cls = rec["cls"] or "opp"
-        self.chip.configure(text=LABEL.get(cls, "?"), bg=COL.get(cls, "#2a3040"),
-                            fg="#0d1117")
-        self.rate_lbl.configure(text=self.move_summary(i, rec))
+        if rec["cls"] is None:
+            # analysis has not reached this ply yet
+            self.chip.configure(text="grading…", bg="#2a3040", fg="#aab3c4")
+            self.rate_lbl.configure(text=f"{rec['san']} — not graded yet")
+        else:
+            cls = rec["cls"]
+            self.chip.configure(text=LABEL.get(cls, "?"),
+                                bg=COL.get(cls, "#2a3040"), fg="#0d1117")
+            self.rate_lbl.configure(text=self.move_summary(i, rec))
         tag = f"{i + 1}/{len(self.stack)}"
         if self.review_acc is not None:
             tag += f" · you {self.review_acc}%"
@@ -1590,7 +1604,8 @@ class CoachApp:
         self.review_lbl.configure(text=tag)
         self.render()
         self.review_arrow(rec)
-        self.say(self.review_line(rec))
+        if not quiet:
+            self.say(self.review_line(rec))
 
     def move_summary(self, i, rec):
         num = 1 + sum(1 for s in self.stack[:i] if s["color"] == chess.WHITE)
