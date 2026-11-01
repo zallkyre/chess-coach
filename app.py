@@ -610,6 +610,7 @@ class CoachApp:
         self.review_mode = False
         self.review_ply = 0
         self.review_acc = None
+        self.review_ray = None
         self._final_board = None
         self._auto_job = None
         self.hint_cache = None
@@ -1294,14 +1295,15 @@ class CoachApp:
 
         self.animate(move, start_grading)
 
-    def rate(self, fen, move, only, depth, sans):
+    def rate(self, fen, move, only, depth, sans, mover_color=None):
         """Grade one move in the position it was played from.
 
-        Returns (badge, loss, cp_white). The loss is the engine's own score
-        for the best move minus its score for the move you played, both from
+        Returns (badge, loss, cp_white, best_uci). The loss is the engine's own
+        score for the best move minus its score for the move played, both from
         the same root at the same depth, so tempo is not counted as a loss."""
         g = self.engine.grade(fen, move.uci(), depth)
-        sign = 1 if self.player_color == chess.WHITE else -1
+        mover = self.player_color if mover_color is None else mover_color
+        sign = 1 if mover == chess.WHITE else -1
         best = g["best"]
         played = g["played"] or best
         best_cp = sign * best["cp"]
@@ -1484,15 +1486,11 @@ class CoachApp:
         self.reviewing = True
         total = len(self.stack)
         for i, rec in enumerate(self.stack):
-            if rec["color"] != self.player_color:
-                rec["cls"] = "opp"
-                rec["loss"] = 0
-                self.ui(lambda i=i: self._review_progress(i + 1, total))
-                continue
             sans = [r["san"] for r in self.stack[:i + 1]]
             try:
                 cls, loss, _, best = self.rate(rec["fen"], rec["move"], rec["only"],
-                                               REVIEW_DEPTH, sans)
+                                               REVIEW_DEPTH, sans,
+                                               mover_color=rec["color"])
                 rec["cls"] = cls
                 rec["loss"] = loss
                 rec["best"] = best
@@ -1507,9 +1505,16 @@ class CoachApp:
         self.render_moves()
         self.set_analyze_state("Analyze again", enabled=True)
         acc = self.accuracy()
+        racc = self.accuracy(not self.player_color)
         self.review_acc = acc
+        self.review_ray = racc
         self.chip.configure(text="done", bg=COL["best"], fg="#0d1117")
-        self.rate_lbl.configure(text=f"accuracy {acc}%" if acc is not None else "done")
+        bits = []
+        if acc is not None:
+            bits.append(f"you {acc}%")
+        if racc is not None:
+            bits.append(f"ray {racc}%")
+        self.rate_lbl.configure(text=" · ".join(bits) if bits else "done")
         self.start_review()
 
     # ---------------- step-through review ----------------
@@ -1532,9 +1537,12 @@ class CoachApp:
         self.last_move = self.stack[-1]["move"] if self.stack else None
         self.game_over = True
         self.chip.configure(text="done", bg=COL["best"], fg="#0d1117")
-        self.rate_lbl.configure(
-            text=f"accuracy {self.review_acc}%" if self.review_acc is not None
-            else "review closed")
+        bits = []
+        if self.review_acc is not None:
+            bits.append(f"you {self.review_acc}%")
+        if self.review_ray is not None:
+            bits.append(f"ray {self.review_ray}%")
+        self.rate_lbl.configure(text=" · ".join(bits) if bits else "review closed")
         self.say("review closed. analyze again whenever you want a rerun.")
         self.render()
 
@@ -1558,9 +1566,12 @@ class CoachApp:
         self.chip.configure(text=LABEL.get(cls, "?"), bg=COL.get(cls, "#2a3040"),
                             fg="#0d1117")
         self.rate_lbl.configure(text=self.move_summary(i, rec))
-        self.review_lbl.configure(
-            text=f"{i + 1}/{len(self.stack)}"
-                 + (f" · {self.review_acc}%" if self.review_acc is not None else ""))
+        tag = f"{i + 1}/{len(self.stack)}"
+        if self.review_acc is not None:
+            tag += f" · you {self.review_acc}%"
+        if self.review_ray is not None:
+            tag += f" · ray {self.review_ray}%"
+        self.review_lbl.configure(text=tag)
         self.render()
         self.review_arrow(rec)
         self.say(self.review_line(rec))
@@ -1571,26 +1582,32 @@ class CoachApp:
         if rec["cls"] == "opp":
             return f"{num}{dots} {rec['san']} — Ray's move"
         label = LABEL.get(rec["cls"], "?")
-        cost = "" if rec["cls"] in ("best", "brilliant", "great", "book",
-                                    "excellent", "good", "forced") else \
-            f" · {min(rec['loss'], 1500)/100:.2f} pawns"
+        if rec["cls"] in ("best", "brilliant", "great", "book",
+                          "excellent", "good", "forced"):
+            cost = ""
+        elif rec["loss"] >= 9000:
+            cost = " · mate allowed"
+        else:
+            cost = f" · {min(rec['loss'], 1500)/100:.2f} pawns"
         return f"{num}{dots} {rec['san']} — {label}{cost}"
 
     def review_line(self, rec):
+        mine = rec["color"] == self.player_color
         if rec["cls"] == "opp":
             return f"Ray played {rec['san']}. no grade for the other guy."
-        note = {"brilliant": "a sacrifice that works. still impressed.",
-                "great": "only move that held. the rest lose.",
-                "best": "engine's pick. nothing to add.",
-                "excellent": "nearly the top move. small cost only.",
-                "good": "playable. a bit of value left on the table.",
+        note = {"brilliant": "a sacrifice that works.",
+                "great": "the only move that held.",
+                "best": "engine's pick.",
+                "excellent": "nearly the top move.",
+                "good": "playable, a bit of value left on the table.",
                 "book": "opening theory. mainline stuff.",
-                "miss": "you had a win here and let it slip.",
+                "miss": "a win was there and it slipped away.",
                 "inaccuracy": "slight wobble. something better existed.",
-                "mistake": "that one cost you real value.",
-                "blunder": "big drop. arrow shows what you should have played.",
+                "mistake": "that cost real value.",
+                "blunder": "big drop. arrow shows the move that was there.",
                 "forced": "only legal move. nothing to grade."}.get(rec["cls"], "")
-        return f"{rec['san']}: {LABEL.get(rec['cls'], '?')}. {note}"
+        who = "" if mine else "ray: "
+        return f"{who}{rec['san']} — {LABEL.get(rec['cls'], '?')}. {note}"
 
     def review_arrow(self, rec):
         """Show the engine's move when the one played was not it."""
@@ -1639,14 +1656,14 @@ class CoachApp:
         except Exception:
             pass
 
-    def accuracy(self):
+    def accuracy(self, color=None):
+        color = self.player_color if color is None else color
         pts = {"brilliant": 100, "great": 97, "best": 100, "excellent": 90,
                "good": 74, "book": 92, "inaccuracy": 60, "mistake": 35,
                "miss": 25, "blunder": 10, "forced": 72}
         rated = []
         for s in self.stack:
-            mine = s["color"] == self.player_color
-            if mine and s["cls"] in pts:
+            if s["color"] == color and s["cls"] in pts:
                 rated.append(pts[s["cls"]])
         return round(sum(rated) / len(rated)) if rated else None
 
