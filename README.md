@@ -39,9 +39,11 @@ else is touched.
 - **Hint**: first press points at the piece, second press names the move
 - **Revert**: the button, or click any move in the list to rewind there
 - **Drag or click** to move, legal-move dots, last-move and check highlights
-- **Post-game review**: an **Analyze game** button lights up when the game
-  ends. It re-analyzes every position deeper than the live pass, fills in the
-  whole move list, and gives you an accuracy number
+- **Post-game review, step by step**: an **Analyze game** button lights up when
+  the game ends. It re-analyzes every position deeper than the live pass, then
+  walks the game with ◀ / ▶ (or ← →), showing one position at a time with the
+  badge, the pawns it cost, and a green arrow where the engine would have gone.
+  **auto** replays the whole thing, Esc closes it
 - **Side buttons** next to the board: **LOCK** pins the window on top until you
   press it again, **FEN** copies the position, the theme button cycles board
   colors, **FULL** maximizes the window

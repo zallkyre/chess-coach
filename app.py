@@ -433,11 +433,11 @@ LINES = {
 LABEL = {"brilliant": "Brilliant", "great": "Great", "best": "Best",
          "excellent": "Excellent", "good": "Good", "book": "Book",
          "inaccuracy": "Inaccuracy", "mistake": "Mistake", "miss": "Miss",
-         "blunder": "Blunder", "forced": "Forced"}
+         "blunder": "Blunder", "forced": "Forced", "opp": "Their move"}
 COL = {"brilliant": "#26c2a3", "great": "#5b9bd5", "best": "#7fb14a",
        "excellent": "#96bc4b", "good": "#8fae84", "book": "#a4835f",
        "inaccuracy": "#f2c231", "mistake": "#e08a2e", "miss": "#e0584a",
-       "blunder": "#cf4b42", "forced": "#8a93a6"}
+       "blunder": "#cf4b42", "forced": "#8a93a6", "opp": "#8a93a6"}
 GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "✓",
          "good": "·", "book": "≡", "inaccuracy": "?!", "mistake": "?",
          "miss": "✗", "blunder": "??", "forced": "="}
@@ -607,6 +607,11 @@ class CoachApp:
         self.game_over = False
         self.busy = False
         self.reviewing = False
+        self.review_mode = False
+        self.review_ply = 0
+        self.review_acc = None
+        self._final_board = None
+        self._auto_job = None
         self.hint_cache = None
         self.hint_armed = False
         self.threat_arrows = []
@@ -877,6 +882,27 @@ class CoachApp:
             cursor="arrow", pady=7, state="disabled")
         self.btn_analyze.pack(fill="x", padx=8, pady=(0, 8))
 
+        # step-through review (hidden until the analysis finishes)
+        self.review_bar = tk.Frame(c3, bg=CARD)
+        self.btn_prev = tk.Button(self.review_bar, text="◀", width=3,
+                                  command=lambda: self.step_review(-1),
+                                  bg=CARD2, fg=TEXT, relief="flat", bd=0,
+                                  cursor="hand2", font=("Segoe UI", 9, "bold"))
+        self.btn_prev.pack(side="left")
+        self.btn_next = tk.Button(self.review_bar, text="▶", width=3,
+                                  command=lambda: self.step_review(1),
+                                  bg=CARD2, fg=TEXT, relief="flat", bd=0,
+                                  cursor="hand2", font=("Segoe UI", 9, "bold"))
+        self.btn_next.pack(side="right")
+        self.btn_auto = tk.Button(self.review_bar, text="auto", width=5,
+                                  command=self.toggle_auto,
+                                  bg=CARD2, fg=TEXT, relief="flat", bd=0,
+                                  cursor="hand2", font=("Consolas", 8, "bold"))
+        self.btn_auto.pack(side="right", padx=(0, 4))
+        self.review_lbl = tk.Label(self.review_bar, text="", bg=CARD, fg=TEXT,
+                                   font=("Consolas", 8, "bold"))
+        self.review_lbl.pack(side="left", fill="x", expand=True, padx=6)
+
         # moves
         c4 = self.card(parent)
         mf = tk.Frame(c4, bg="#0e1117")
@@ -964,6 +990,16 @@ class CoachApp:
         if isinstance(e.widget, (tk.Entry, tk.Text)):
             return
         k = e.keysym.lower()
+        if self.review_mode:
+            if k == "left":
+                self.step_review(-1)
+                return
+            if k == "right":
+                self.step_review(1)
+                return
+            if k == "escape":
+                self.end_review()
+                return
         if k == "h":
             self.hint()
         elif k == "u":
@@ -1278,14 +1314,15 @@ class CoachApp:
                          played_cp=played_cp, best_mate=best["mate"],
                          sac=is_sacrifice(chess.Board(fen), move),
                          book=tuple(sans) in BOOK_MOVES, only=only)
-        return cls, loss, played["cp"]
+        return cls, loss, played["cp"], best.get("uci")
 
     def _grade_then_reply(self, move, san, only):
         rec = self.stack[-1]
         sans = [r["san"] for r in self.stack]        # includes this move
         try:
-            cls, loss, cp_white = self.rate(rec["fen"], move, only,
-                                            GRADE_DEPTH, sans)
+            cls, loss, cp_white, best = self.rate(rec["fen"], move, only,
+                                                  GRADE_DEPTH, sans)
+            rec["best"] = best
         except Exception:
             cls, loss, cp_white = "good", 0, self.last_eval
         sign = 1 if self.player_color == chess.WHITE else -1
@@ -1454,10 +1491,11 @@ class CoachApp:
                 continue
             sans = [r["san"] for r in self.stack[:i + 1]]
             try:
-                cls, loss, _ = self.rate(rec["fen"], rec["move"], rec["only"],
-                                         REVIEW_DEPTH, sans)
+                cls, loss, _, best = self.rate(rec["fen"], rec["move"], rec["only"],
+                                               REVIEW_DEPTH, sans)
                 rec["cls"] = cls
                 rec["loss"] = loss
+                rec["best"] = best
             except Exception:
                 rec["cls"] = rec["cls"] or "good"
             self.ui(lambda i=i: self._review_progress(i + 1, total))
@@ -1469,13 +1507,137 @@ class CoachApp:
         self.render_moves()
         self.set_analyze_state("Analyze again", enabled=True)
         acc = self.accuracy()
-        best = sum(1 for s in self.stack if s["cls"] == "best")
-        blunders = sum(1 for s in self.stack if s["cls"] == "blunder")
+        self.review_acc = acc
         self.chip.configure(text="done", bg=COL["best"], fg="#0d1117")
-        self.rate_lbl.configure(text=f"accuracy {acc}% · {best} best · {blunders} blunders")
-        self.say(f"done. accuracy {acc}%. click any move to go back to it."
-                 if acc is not None else "done.")
+        self.rate_lbl.configure(text=f"accuracy {acc}%" if acc is not None else "done")
+        self.start_review()
+
+    # ---------------- step-through review ----------------
+    def start_review(self):
+        """Walk the game one move at a time: prev / next / auto, arrow keys."""
+        if not self.stack:
+            return
+        if not self.review_mode:
+            self._final_board = self.board.copy(stack=True)
+        self.review_mode = True
+        self.review_bar.pack(fill="x", padx=8, pady=(0, 8), before=self.btn_analyze)
+        self.step_review(absolute=0)
+
+    def end_review(self):
+        self.stop_auto()
+        self.review_mode = False
+        self.review_bar.pack_forget()
+        if self._final_board is not None:
+            self.board = self._final_board
+        self.last_move = self.stack[-1]["move"] if self.stack else None
+        self.game_over = True
+        self.chip.configure(text="done", bg=COL["best"], fg="#0d1117")
+        self.rate_lbl.configure(
+            text=f"accuracy {self.review_acc}%" if self.review_acc is not None
+            else "review closed")
+        self.say("review closed. analyze again whenever you want a rerun.")
         self.render()
+
+    def step_review(self, delta=0, absolute=None):
+        if not self.stack:
+            return
+        i = absolute if absolute is not None else self.review_ply + delta
+        if i < 0:
+            i = 0
+        if i >= len(self.stack):
+            self.end_review()
+            return
+        rec = self.stack[i]
+        self.review_ply = i
+        board = chess.Board(rec["fen"])
+        board.push(rec["move"])
+        self.board = board
+        self.last_move = rec["move"]
+        self.game_over = True
+        cls = rec["cls"] or "opp"
+        self.chip.configure(text=LABEL.get(cls, "?"), bg=COL.get(cls, "#2a3040"),
+                            fg="#0d1117")
+        self.rate_lbl.configure(text=self.move_summary(i, rec))
+        self.review_lbl.configure(
+            text=f"{i + 1}/{len(self.stack)}"
+                 + (f" · {self.review_acc}%" if self.review_acc is not None else ""))
+        self.render()
+        self.review_arrow(rec)
+        self.say(self.review_line(rec))
+
+    def move_summary(self, i, rec):
+        num = 1 + sum(1 for s in self.stack[:i] if s["color"] == chess.WHITE)
+        dots = "." if rec["color"] == chess.WHITE else "..."
+        if rec["cls"] == "opp":
+            return f"{num}{dots} {rec['san']} — Ray's move"
+        label = LABEL.get(rec["cls"], "?")
+        cost = "" if rec["cls"] in ("best", "brilliant", "great", "book",
+                                    "excellent", "good", "forced") else \
+            f" · {min(rec['loss'], 1500)/100:.2f} pawns"
+        return f"{num}{dots} {rec['san']} — {label}{cost}"
+
+    def review_line(self, rec):
+        if rec["cls"] == "opp":
+            return f"Ray played {rec['san']}. no grade for the other guy."
+        note = {"brilliant": "a sacrifice that works. still impressed.",
+                "great": "only move that held. the rest lose.",
+                "best": "engine's pick. nothing to add.",
+                "excellent": "nearly the top move. small cost only.",
+                "good": "playable. a bit of value left on the table.",
+                "book": "opening theory. mainline stuff.",
+                "miss": "you had a win here and let it slip.",
+                "inaccuracy": "slight wobble. something better existed.",
+                "mistake": "that one cost you real value.",
+                "blunder": "big drop. arrow shows what you should have played.",
+                "forced": "only legal move. nothing to grade."}.get(rec["cls"], "")
+        return f"{rec['san']}: {LABEL.get(rec['cls'], '?')}. {note}"
+
+    def review_arrow(self, rec):
+        """Show the engine's move when the one played was not it."""
+        self.canvas.delete("rev")
+        if rec["cls"] in ("best", "brilliant", "great", "book", "excellent",
+                          "good", "opp", "forced", None):
+            return
+        best = rec.get("best")
+        if not best:
+            return
+        try:
+            move = chess.Move.from_uci(best)
+        except Exception:
+            return
+        x1, y1 = self.center(move.from_square)
+        x2, y2 = self.center(move.to_square)
+        self.canvas.create_line(x1, y1, x2, y2, fill="#7ec96b", width=7,
+                                arrow="last", arrowshape=(14, 18, 6), tags="rev")
+        x, y = self.sq_xy(move.from_square)
+        self.canvas.create_rectangle(x + 2, y + 2, x + self.SQ - 2, y + self.SQ - 2,
+                                     outline="#7ec96b", width=2, tags="rev")
+
+    def toggle_auto(self):
+        if self._auto_job:
+            self.stop_auto()
+            return
+        self.btn_auto.configure(text="stop", bg="#df9455", fg="#0d1117")
+        self._auto_tick()
+
+    def _auto_tick(self):
+        if not self.review_mode:
+            self._auto_job = None
+            return
+        self.step_review(1)
+        self._auto_job = self.root.after(1500, self._auto_tick) if self.review_mode else None
+
+    def stop_auto(self):
+        if self._auto_job:
+            try:
+                self.root.after_cancel(self._auto_job)
+            except Exception:
+                pass
+        self._auto_job = None
+        try:
+            self.btn_auto.configure(text="auto", bg=CARD2, fg=TEXT)
+        except Exception:
+            pass
 
     def accuracy(self):
         pts = {"brilliant": 100, "great": 97, "best": 100, "excellent": 90,
@@ -1493,6 +1655,11 @@ class CoachApp:
         if not first and self.stack and not self.game_over:
             if not messagebox.askyesno(APP, "Abandon this game?"):
                 return
+        if self.review_mode:
+            self.stop_auto()
+            self.review_mode = False
+            self.review_bar.pack_forget()
+            self.review_acc = None
         self.board.reset()
         self.stack = []
         self.selected = None
@@ -1523,7 +1690,15 @@ class CoachApp:
         self.update_turn()
 
     def undo(self):
-        if self.busy or self.reviewing or not self.stack:
+        if self.reviewing or not self.stack:
+            return
+        if self.review_mode:
+            self.stop_auto()
+            self.review_mode = False
+            self.review_bar.pack_forget()
+            if self._final_board is not None:
+                self.board = self._final_board.copy(stack=True)
+        if self.busy:
             return
         # walk back over the opponent's reply first, then your own move, so the
         # board always comes back on your turn instead of theirs
@@ -1598,6 +1773,8 @@ class CoachApp:
     def flip(self):
         self.orientation = not self.orientation
         self.render()
+        if self.review_mode and 0 <= self.review_ply < len(self.stack):
+            self.review_arrow(self.stack[self.review_ply])
 
     # ---------------- panel updates ----------------
     def say(self, text):
@@ -1636,7 +1813,11 @@ class CoachApp:
         idx = self.moves.index(f"@{e.x},{e.y}")
         for tag in self.moves.tag_names(idx):
             if tag.startswith("m") and tag[1:].isdigit():
-                self.rewind_to(int(tag[1:]))
+                ply = int(tag[1:])
+                if self.review_mode:
+                    self.step_review(absolute=ply)
+                else:
+                    self.rewind_to(ply)
                 return
 
     def rewind_to(self, ply):
