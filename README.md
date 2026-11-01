@@ -37,8 +37,9 @@ else is touched.
 - **Hint**: first press points at the piece, second press names the move
 - **Revert**: the button, or click any move in the list to rewind there
 - **Drag or click** to move, legal-move dots, last-move and check highlights
-- **Post-game review**: re-analyzes every position deeper than the live pass,
-  fills in the whole move list, and gives you an accuracy number
+- **Post-game review**: an **Analyze game** button lights up when the game
+  ends. It re-analyzes every position deeper than the live pass, fills in the
+  whole move list, and gives you an accuracy number
 - **Captured material**, board themes, coordinates, eval bar, all toggleable
 
 ## Keys and providers

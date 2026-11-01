@@ -636,6 +636,13 @@ class CoachApp:
                           activeforeground=fg, bd=0, cursor="hand2", pady=6)
             b.pack(side="left", fill="x", expand=True, padx=2)
 
+        self.btn_analyze = tk.Button(
+            c3, text="Analyze game", command=self.analyze_game, bg="#20252f",
+            fg="#6f7789", relief="flat", font=("Segoe UI", 9, "bold"),
+            activebackground="#2a3040", activeforeground=TEXT, bd=0,
+            cursor="arrow", pady=7, state="disabled")
+        self.btn_analyze.pack(fill="x", padx=8, pady=(0, 8))
+
         # moves
         c4 = self.card(parent)
         mf = tk.Frame(c4, bg="#0e1117")
@@ -1137,13 +1144,40 @@ class CoachApp:
             msg = "stalemate. nobody wins, everyone's annoyed."
         else:
             msg = "game over. draw, i think."
-        self.say(msg + " give me a second to go through it.")
+        self.say(msg + " hit analyze when you want the full breakdown.")
         self.set_rating("forced", 0)
-        self.chip.configure(text="review…")
-        if self.settings.get("review", True):
-            threading.Thread(target=self._review, daemon=True).start()
-        else:
-            self.render()
+        self.chip.configure(text="ready to analyze", bg="#2a3040", fg="#aab3c4")
+        self.set_analyze_state("Analyze game", enabled=bool(self.stack))
+        self.render()
+
+    def set_analyze_state(self, text="Analyze game", enabled=False):
+        """Enable the analyze button only once the game is over."""
+        try:
+            self.btn_analyze.configure(
+                text=text,
+                state="normal" if enabled else "disabled",
+                bg="#7ec96b" if enabled else "#20252f",
+                fg="#0d1117" if enabled else "#6f7789",
+                cursor="hand2" if enabled else "arrow")
+        except Exception:
+            pass
+
+    def analyze_game(self):
+        """Full post-game pass: every position searched at REVIEW_DEPTH."""
+        if self.reviewing or not self.game_over or not self.stack:
+            return
+        self.reviewing = True
+        self.set_analyze_state("Analyzing…", enabled=False)
+        self.chip.configure(text="review…", bg="#2a3040", fg="#aab3c4")
+        self.say("going through the whole game. give me a minute.")
+        threading.Thread(target=self._review, daemon=True).start()
+
+    def _review_progress(self, done, total):
+        self.chip.configure(text=f"review {done}/{total}")
+        try:
+            self.btn_analyze.configure(text=f"Analyzing {done}/{total}")
+        except Exception:
+            pass
 
     def _review(self):
         self.reviewing = True
@@ -1152,8 +1186,7 @@ class CoachApp:
         for i, fen in enumerate(positions):
             cp, _, _ = self.engine.analyze(fen, REVIEW_DEPTH, timeout=6)
             evals.append(cp)
-            self.ui(lambda i=i: self.chip.configure(
-                text=f"review {i+1}/{len(positions)}"))
+            self.ui(lambda i=i: self._review_progress(i + 1, len(positions)))
         for i, rec in enumerate(self.stack):
             if i + 1 >= len(evals):
                 break
@@ -1168,7 +1201,9 @@ class CoachApp:
         self.ui(self.after_review)
 
     def after_review(self):
+        self.reviewing = False
         self.render_moves()
+        self.set_analyze_state("Analyze again", enabled=True)
         acc = self.accuracy()
         best = sum(1 for s in self.stack if s["cls"] == "best")
         blunders = sum(1 for s in self.stack if s["cls"] == "blunder")
@@ -1206,6 +1241,7 @@ class CoachApp:
         self.render_moves()
         self.render()
         self.chip.configure(text="ready", bg="#2a3040", fg="#aab3c4")
+        self.set_analyze_state()
         self.rate_lbl.configure(text="make a move — i'll rate it")
         self.say("your move. i'm not a pro, i'm just loud.")
 
@@ -1231,7 +1267,9 @@ class CoachApp:
             self.stack.pop()
         self.last_move = self.stack[-1]["move"] if self.stack else None
         self.game_over = False
+        self.reviewing = False
         self.selected = None
+        self.set_analyze_state()
         self.say("took it back. we don't talk about it.")
         self.render_moves()
         self.render()
@@ -1333,7 +1371,9 @@ class CoachApp:
         self.stack = self.stack[:ply]
         self.last_move = self.stack[-1]["move"] if self.stack else None
         self.game_over = False
+        self.reviewing = False
         self.selected = None
+        self.set_analyze_state()
         self.say("rewound. no judgement. okay, maybe a little.")
         self.render_moves()
         self.render()
