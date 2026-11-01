@@ -1453,15 +1453,22 @@ class CoachApp:
     def undo(self):
         if self.busy or self.reviewing or not self.stack:
             return
-        self.board.pop()
-        self.stack.pop()
-        if self.stack and self.stack[-1]["color"] != self.player_color:
-            self.board.pop()
+        # walk back over the opponent's reply first, then your own move, so the
+        # board always comes back on your turn instead of theirs
+        while self.stack and self.stack[-1]["color"] != self.player_color:
             self.stack.pop()
+            self.board.pop()
+        if self.stack:
+            self.stack.pop()
+            self.board.pop()
         self.last_move = self.stack[-1]["move"] if self.stack else None
         self.game_over = False
         self.reviewing = False
+        self.busy = False
         self.selected = None
+        self.hint_cache = None
+        self.hint_armed = False
+        self.canvas.delete("hint")
         self.set_analyze_state()
         self.say("took it back. we don't talk about it.")
         self.render_moves()
@@ -1478,6 +1485,7 @@ class CoachApp:
             return
         if self.hint_armed and self.hint_cache:
             move = chess.Move.from_uci(self.hint_cache)
+            self._hint_arrow(move)
             self.say(f"fine — {self.board.san(move)}. i'm no grandmaster, but i'd play that.")
             self.hint_armed = False
             self.hint_cache = None
@@ -1490,6 +1498,13 @@ class CoachApp:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _hint_arrow(self, move):
+        self.canvas.delete("hint")
+        x1, y1 = self.center(move.from_square)
+        x2, y2 = self.center(move.to_square)
+        self.canvas.create_line(x1, y1, x2, y2, fill="#7ec96b", width=9,
+                                arrow="last", arrowshape=(16, 20, 7), tags="hint")
+
     def _show_hint(self, best):
         if not best:
             self.say("i've got nothing. worrying for both of us.")
@@ -1497,11 +1512,12 @@ class CoachApp:
         move = chess.Move.from_uci(best)
         self.hint_cache = best
         self.hint_armed = True
+        # first press only marks the piece. the destination stays hidden until
+        # the second press, otherwise "hint" is just the answer.
         self.canvas.delete("hint")
-        x1, y1 = self.center(move.from_square)
-        x2, y2 = self.center(move.to_square)
-        self.canvas.create_line(x1, y1, x2, y2, fill="#7ec96b", width=9,
-                                arrow="last", arrowshape=(16, 20, 7), tags="hint")
+        x, y = self.sq_xy(move.from_square)
+        self.canvas.create_rectangle(x + 3, y + 3, x + self.SQ - 3, y + self.SQ - 3,
+                                     outline="#7ec96b", width=3, tags="hint")
         p = self.board.piece_at(move.from_square)
         name = chess.piece_name(p.piece_type) if p else "piece"
         self.say(f"look at your {name} on {chess.square_name(move.from_square)}. "
