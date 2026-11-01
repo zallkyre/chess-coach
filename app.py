@@ -607,11 +607,11 @@ class CoachApp:
         self.game_over = False
         self.busy = False
         self.reviewing = False
+        self.epoch = 0               # bumped per game; stale callbacks check it
         self.review_mode = False
         self.review_ply = 0
         self.review_acc = None
         self.review_ray = None
-        self._final_board = None
         self._auto_job = None
         self.hint_cache = None
         self.hint_armed = False
@@ -1276,21 +1276,22 @@ class CoachApp:
         self.board.push(move)
         self.last_move = move
         self.selected = None
-        self.stack.append({"move": move, "san": san, "fen": fen_before,
-                           "cls": None, "loss": 0, "only": only,
-                           "color": not self.board.turn})
+        rec = {"move": move, "san": san, "fen": fen_before,
+               "cls": None, "loss": 0, "only": only,
+               "color": not self.board.turn}
+        self.stack.append(rec)
         self.render_moves()
         self.render()
         self.busy = True
+        epoch = self.epoch            # bound to this move, not read later
 
-        if self.board.is_game_over():
-            self.animate(move, lambda: self.end_game())
-            return
-
+        # even a move that ends the game gets graded first, so the last move
+        # in the list is never left blank
         def start_grading():
             self.busy = True
             self.engine_lbl.configure(text="thinking…", fg="#dfbe57")
-            threading.Thread(target=self._grade_then_reply, args=(move, san, only),
+            threading.Thread(target=self._grade_then_reply,
+                             args=(move, san, only, epoch, rec),
                              daemon=True).start()
 
         self.animate(move, start_grading)
@@ -1318,8 +1319,11 @@ class CoachApp:
                          book=tuple(sans) in BOOK_MOVES, only=only)
         return cls, loss, played["cp"], best.get("uci")
 
-    def _grade_then_reply(self, move, san, only):
-        rec = self.stack[-1]
+    def _grade_then_reply(self, move, san, only, epoch, rec):
+        if epoch != self.epoch:      # a new game started while we were working
+            return
+        if not self.stack or self.stack[-1] is not rec:
+            return                   # the move was already taken back
         sans = [r["san"] for r in self.stack]        # includes this move
         try:
             cls, loss, cp_white, best = self.rate(rec["fen"], move, only,
@@ -1329,12 +1333,14 @@ class CoachApp:
             cls, loss, cp_white = "good", 0, self.last_eval
         sign = 1 if self.player_color == chess.WHITE else -1
         self.pre_eval = sign * cp_white
-        self.ui(lambda: self.after_grade(cp_white, cls, loss, move))
+        self.ui(lambda: self.after_grade(cp_white, cls, loss, move, epoch, rec))
 
-    def after_grade(self, cp_white, cls, loss, move):
+    def after_grade(self, cp_white, cls, loss, move, epoch, rec):
+        if epoch != self.epoch or not self.stack or self.stack[-1] is not rec:
+            return                   # stale result from an abandoned game
         self.last_eval = cp_white
-        self.stack[-1]["cls"] = cls
-        self.stack[-1]["loss"] = loss
+        rec["cls"] = cls
+        rec["loss"] = loss
         self.set_rating(cls, loss)
         self.render_moves()
         self.render()
@@ -1346,30 +1352,35 @@ class CoachApp:
             self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
             self.end_game()
             return
-        threading.Thread(target=self._engine_reply, daemon=True).start()
+        threading.Thread(target=self._engine_reply,
+                         args=(epoch, self.board.fen()), daemon=True).start()
 
-    def _engine_reply(self):
-        fen = self.board.fen()
+    def _engine_reply(self, epoch, fen):
         level = self.settings["difficulty"]
         move = None
         chance = random_chance(level)
         if chance and random.random() < chance:
-            legal = list(self.board.legal_moves)
+            legal = list(chess.Board(fen).legal_moves)
             if legal:
                 move = random.choice(legal).uci()
         if move is None:
             move = self.engine.play(fen, level, depth_for(level))
         time.sleep(0.30)          # let the player's own move land before the answer
-        self.ui(lambda: self.after_reply(move))
+        self.ui(lambda: self.after_reply(move, epoch))
 
-    def after_reply(self, uci):
+    def after_reply(self, uci, epoch):
+        if epoch != self.epoch:
+            return                   # stale reply from an abandoned game
         if not uci:
             self.busy = False
             self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
             return
         move = chess.Move.from_uci(uci)
         if move not in self.board.legal_moves:
-            move = next(iter(self.board.legal_moves))
+            # never invent a move to paper over a desync - just drop the reply
+            self.busy = False
+            self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
+            return
         fen_before = self.board.fen()
         san = self.board.san(move)
         self.board.push(move)
@@ -1473,16 +1484,19 @@ class CoachApp:
         self.set_analyze_state("Analyzing…", enabled=False)
         self.chip.configure(text="review…", bg="#2a3040", fg="#aab3c4")
         self.say("going through the whole game. give me a minute.")
-        threading.Thread(target=self._review, daemon=True).start()
+        threading.Thread(target=self._review, args=(self.epoch,),
+                         daemon=True).start()
 
-    def _review_progress(self, done, total):
+    def _review_progress(self, done, total, epoch):
+        if epoch != self.epoch:
+            return
         self.chip.configure(text=f"review {done}/{total}")
         try:
             self.btn_analyze.configure(text=f"Analyzing {done}/{total}")
         except Exception:
             pass
 
-    def _review(self):
+    def _review(self, epoch):
         self.reviewing = True
         total = len(self.stack)
         for i, rec in enumerate(self.stack):
@@ -1496,12 +1510,17 @@ class CoachApp:
                 rec["best"] = best
             except Exception:
                 rec["cls"] = rec["cls"] or "good"
-            self.ui(lambda i=i: self._review_progress(i + 1, total))
+            self.ui(lambda i=i: self._review_progress(i + 1, total, epoch))
+            if epoch != self.epoch:
+                return
         self.reviewing = False
         self.ui(self.after_review)
 
     def after_review(self):
         self.reviewing = False
+        if not self.game_over or not self.stack:
+            self.set_analyze_state()      # game was abandoned mid-analysis
+            return
         self.render_moves()
         self.set_analyze_state("Analyze again", enabled=True)
         acc = self.accuracy()
@@ -1522,8 +1541,6 @@ class CoachApp:
         """Walk the game one move at a time: prev / next / auto, arrow keys."""
         if not self.stack:
             return
-        if not self.review_mode:
-            self._final_board = self.board.copy(stack=True)
         self.review_mode = True
         self.review_bar.pack(fill="x", padx=8, pady=(0, 8), before=self.btn_analyze)
         self.step_review(absolute=0)
@@ -1532,8 +1549,7 @@ class CoachApp:
         self.stop_auto()
         self.review_mode = False
         self.review_bar.pack_forget()
-        if self._final_board is not None:
-            self.board = self._final_board
+        self.board = self._board_after_stack()
         self.last_move = self.stack[-1]["move"] if self.stack else None
         self.game_over = True
         self.chip.configure(text="done", bg=COL["best"], fg="#0d1117")
@@ -1672,11 +1688,12 @@ class CoachApp:
         if not first and self.stack and not self.game_over:
             if not messagebox.askyesno(APP, "Abandon this game?"):
                 return
-        if self.review_mode:
-            self.stop_auto()
-            self.review_mode = False
-            self.review_bar.pack_forget()
-            self.review_acc = None
+        self.stop_auto()
+        self.epoch += 1
+        self.review_mode = False
+        self.review_bar.pack_forget()
+        self.review_acc = None
+        self.review_ray = None
         self.board.reset()
         self.stack = []
         self.selected = None
@@ -1706,6 +1723,15 @@ class CoachApp:
         self.update_evalbar()
         self.update_turn()
 
+    def _board_after_stack(self):
+        """Rebuild the board from the move record. The board's own move_stack
+        goes stale whenever it is rebuilt (review, rewind), so never pop it."""
+        if not self.stack:
+            return chess.Board()
+        board = chess.Board(self.stack[-1]["fen"])
+        board.push(self.stack[-1]["move"])
+        return board
+
     def undo(self):
         if self.reviewing or not self.stack:
             return
@@ -1713,18 +1739,15 @@ class CoachApp:
             self.stop_auto()
             self.review_mode = False
             self.review_bar.pack_forget()
-            if self._final_board is not None:
-                self.board = self._final_board.copy(stack=True)
         if self.busy:
             return
         # walk back over the opponent's reply first, then your own move, so the
         # board always comes back on your turn instead of theirs
         while self.stack and self.stack[-1]["color"] != self.player_color:
             self.stack.pop()
-            self.board.pop()
         if self.stack:
             self.stack.pop()
-            self.board.pop()
+        self.board = self._board_after_stack()
         self.last_move = self.stack[-1]["move"] if self.stack else None
         self.game_over = False
         self.reviewing = False
@@ -1838,11 +1861,15 @@ class CoachApp:
                 return
 
     def rewind_to(self, ply):
+        """Click a move to go back to it. Always lands on your turn: clicking
+        your own move rewinds to before it, clicking Ray's move to after it."""
         if ply >= len(self.stack):
             return
-        target = self.stack[ply]
-        self.board = chess.Board(target["fen"])
-        self.stack = self.stack[:ply]
+        if self.stack[ply]["color"] == self.player_color:
+            self.stack = self.stack[:ply]
+        else:
+            self.stack = self.stack[:ply + 1]
+        self.board = self._board_after_stack()
         self.last_move = self.stack[-1]["move"] if self.stack else None
         self.game_over = False
         self.reviewing = False
