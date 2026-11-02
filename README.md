@@ -56,6 +56,10 @@ else is touched.
   your accuracy next to his. The walkthrough opens the moment you press
   Analyze and each ply fills in as it is graded, so you never wait for the
   whole pass. **auto** replays the whole thing, Esc closes it
+- **Background precompute**: every move is graded a second time in an idle
+  background thread, and the engine's best move for the current position is
+  cached. Pressing Analyze then takes about a hundredth of a second, and Hint
+  answers from cache instead of searching
 - **Side buttons** next to the board: **LOCK** pins the window on top until you
   press it again, **FEN** copies the position, the theme button cycles board
   colors, **FULL** maximizes the window

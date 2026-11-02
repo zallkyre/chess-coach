@@ -29,7 +29,8 @@ APP = "Chess Coach"
 NOISE = 15                     # cp we do not count against you
 GRADE_DEPTH = 14
 MOVE_TIME_MS = 150
-REVIEW_DEPTH = 18
+REVIEW_DEPTH = 16
+PREFETCH_DEPTH = 14            # background grades, one notch cheaper
 SLIDE_MS = 170
 SIDEBAR_W = 46                 # width of the button strip left of the board
 
@@ -255,7 +256,7 @@ class Engine:
             self.send("setoption name MultiPV value 1")
             self.send("position fen " + fen)
             self.send(f"go movetime {int(ms)}")
-            end = time.time() + ms / 1000 + 6
+            end = time.time() + ms / 1000 + 2
             while time.time() < end:
                 try:
                     line = self.q.get(timeout=max(0.01, end - time.time()))
@@ -802,6 +803,11 @@ class CoachApp:
                 + str(data_dir() / "engine") + "\n\n"
                 "Official builds: https://github.com/official-stockfish/Stockfish/releases")
         self.engine = Engine(exe)
+        self.best_cache = {}            # fen -> engine's move, precomputed
+        self._prefetch_q = queue.PriorityQueue()
+        self._seq = 0
+        self._queued = set()
+        threading.Thread(target=self._prefetch_worker, daemon=True).start()
         self.build_ui()
         self.new_game(first=True)
 
@@ -843,6 +849,67 @@ class CoachApp:
                     pass
         finally:
             self.root.after(25, self._pump)
+
+    # ---------------- background precompute ----------------
+    def schedule_prefetch(self):
+        """Queue a best-move lookup for this position and a deep grade for the
+        move just played. Runs only while the board is idle."""
+        if self.reviewing or self._prefetch_q.qsize() > 6:
+            return
+        fen = self.board.fen()
+        if fen not in self.best_cache and ("best", fen) not in self._queued:
+            self._queued.add(("best", fen))
+            self._seq += 1
+            self._prefetch_q.put((1, self._seq, "best", (fen, self.epoch)))
+        # the last two plies: yours and Ray's, whoever is still ungraded
+        for idx in range(max(0, len(self.stack) - 1), len(self.stack)):
+            rec = self.stack[idx]
+            key = ("deep", id(rec))
+            if rec.get("deep") or key in self._queued:
+                continue
+            self._queued.add(key)
+            sans = [r["san"] for r in self.stack[:idx + 1]]
+            self._seq += 1
+            self._prefetch_q.put((0, self._seq, "deep", (rec, sans, self.epoch)))
+
+    def _prefetch_worker(self):
+        while True:
+            job = self._prefetch_q.get()
+            if job is None:
+                return
+            _, _, kind, payload = job
+            if self.reviewing or self.busy:
+                # drop it, but free the key so the next settle can queue it again
+                self._queued.discard(("best", payload[0]) if kind == "best"
+                                     else ("deep", id(payload[0])))
+                time.sleep(0.12)
+                continue
+            try:
+                if kind == "best":
+                    fen, epoch = payload
+                    if epoch != self.epoch or fen != self.board.fen():
+                        continue
+                    if fen in self.best_cache:
+                        continue
+                    uci = self.engine.best_move(fen, 900)
+                    if uci:
+                        self.best_cache[fen] = uci
+                        if len(self.best_cache) > 200:
+                            self.best_cache.pop(next(iter(self.best_cache)))
+                elif kind == "deep":
+                    rec, sans, epoch = payload
+                    if epoch != self.epoch or rec.get("deep"):
+                        continue
+                    cls, loss, _, best = self.rate(
+                        rec["fen"], rec["move"], rec["only"], PREFETCH_DEPTH,
+                        sans, mover_color=rec["color"])
+                    rec["deep"] = {"cls": cls, "loss": loss, "best": best}
+                    if best:
+                        self.best_cache.setdefault(rec["fen"], best)
+            except Exception:
+                pass
+            self._queued.discard((kind, payload[0]) if kind == "best"
+                                 else ("deep", id(payload[0])))
 
     def build_ui(self):
         r = self.root
@@ -1648,6 +1715,9 @@ class CoachApp:
         self.last_eval = cp_white
         rec["cls"] = cls
         rec["loss"] = loss
+        rec["deep"] = {"cls": cls, "loss": loss, "best": rec.get("best")}
+        if rec.get("best"):
+            self.best_cache.setdefault(rec["fen"], rec["best"])
         self.set_rating(cls, loss)
         self.render_moves()
         self.render()
@@ -1659,6 +1729,7 @@ class CoachApp:
             self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
             self.end_game()
             return
+        self.schedule_prefetch()
         threading.Thread(target=self._engine_reply,
                          args=(epoch, self.board.fen()), daemon=True).start()
 
@@ -1703,6 +1774,8 @@ class CoachApp:
             self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
             if self.board.is_game_over():
                 self.end_game()
+            else:
+                self.schedule_prefetch()
 
         self.animate(move, settle)
 
@@ -1826,6 +1899,12 @@ class CoachApp:
         if self.reviewing or not self.game_over or not self.stack:
             return
         self.reviewing = True
+        while True:                     # drop queued prefetch work
+            try:
+                self._prefetch_q.get_nowait()
+            except queue.Empty:
+                break
+        self._queued.clear()
         self.set_analyze_state("Analyzing…", enabled=False)
         self.chip.configure(text="review…", bg="#2a3040", fg="#aab3c4")
         self.say("going through the whole game. you can already step through it.")
@@ -1851,6 +1930,13 @@ class CoachApp:
         self.reviewing = True
         total = len(self.stack)
         for i, rec in enumerate(self.stack):
+            deep = rec.get("deep")
+            if deep:
+                rec["cls"] = deep["cls"]
+                rec["loss"] = deep["loss"]
+                rec["best"] = deep["best"]
+                self.ui(lambda i=i: self._review_progress(i + 1, total, epoch))
+                continue
             sans = [r["san"] for r in self.stack[:i + 1]]
             try:
                 cls, loss, _, best = self.rate(rec["fen"], rec["move"], rec["only"],
@@ -2082,6 +2168,8 @@ class CoachApp:
             self.ui(lambda: self._set_eval(cp))
 
         threading.Thread(target=boot, daemon=True).start()
+        self.best_cache.clear()
+        self.schedule_prefetch()
 
     def _set_eval(self, cp):
         self.last_eval = cp
@@ -2125,6 +2213,7 @@ class CoachApp:
         self.say("took it back. we don't talk about it.")
         self.render_moves()
         self.render()
+        self.schedule_prefetch()
         threading.Thread(target=self._rebase, daemon=True).start()
 
     def _rebase(self):
@@ -2142,11 +2231,17 @@ class CoachApp:
             self.hint_armed = False
             self.hint_cache = None
             return
-        self.say("thinking properly this time — a couple of seconds…")
         fen = self.board.fen()
+        cached = self.best_cache.get(fen)
+        if cached:
+            self._show_hint(cached, fen)      # already worked out in the background
+            return
+        self.say("thinking properly this time — a couple of seconds…")
 
         def work():
             best = self.engine.best_move(fen, 2500)
+            if best:
+                self.best_cache[fen] = best
             self.ui(lambda: self._show_hint(best, fen))
 
         threading.Thread(target=work, daemon=True).start()
