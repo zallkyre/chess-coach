@@ -859,6 +859,7 @@ class CoachApp:
         self.hint_armed = False
         self.threat_arrows = []
         self.user_arrows = []          # right-drag arrows, survive every move
+        self.user_marks = []           # red square marks
         self.chat_log = []
         self.photo = {}
         self._drag = None
@@ -1083,6 +1084,7 @@ class CoachApp:
         self.side_btns = {}
         for key, text, cmd in (("lock", "LOCK", self.toggle_lock),
                                ("fen", "FEN", self.copy_fen),
+                               ("clear", "CLR", self.clear_arrows),
                                ("bots", "BOTS", self.bot_toggle),
                                ("theme", "GREEN", self.cycle_theme),
                                ("full", "FULL", self.toggle_full)):
@@ -1091,6 +1093,12 @@ class CoachApp:
                             font=("Consolas", 7, "bold"), bg=BG)
             b.pack(fill="x", pady=(0, 6))
             self.side_btns[key] = b
+
+    def clear_arrows(self):
+        self.user_arrows = []
+        self.user_marks = []
+        self.render()
+        self.say("arrows and marks cleared.")
 
     def _sync_side_buttons(self):
         if not getattr(self, "side_btns", None):
@@ -1470,6 +1478,12 @@ class CoachApp:
             x, y = self.sq_xy(king_sq)
             cv.create_rectangle(x + 1, y + 1, x + self.SQ - 1, y + self.SQ - 1,
                                 outline="#dd5a5a", width=3)
+        for sq in self.user_marks:
+            x, y = self.sq_xy(sq)
+            cv.create_rectangle(x, y, x + self.SQ, y + self.SQ,
+                                fill="#e0483c", stipple="gray50", width=0)
+            cv.create_rectangle(x + 2, y + 2, x + self.SQ - 2, y + self.SQ - 2,
+                                outline="#e0483c", width=3)
         if self.selected is not None:
             x, y = self.sq_xy(self.selected)
             cv.create_rectangle(x, y, x + self.SQ, y + self.SQ,
@@ -1530,6 +1544,12 @@ class CoachApp:
         if dst == src:
             if e.state & 0x0001:        # shift + right click clears everything
                 self.user_arrows = []
+                self.user_marks = []
+            else:                        # plain right click: red mark on the square
+                if src in self.user_marks:
+                    self.user_marks.remove(src)
+                else:
+                    self.user_marks.append(src)
             self.render()
             return
         else:
@@ -2268,6 +2288,7 @@ class CoachApp:
         self.review_acc = None
         self.review_ray = None
         self.user_arrows = []
+        self.user_marks = []
         self.board.reset()
         self.stack = []
         self.selected = None
