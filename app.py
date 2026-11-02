@@ -241,7 +241,8 @@ class Engine:
         down the engine's own ranking, so a weak bot plays badly on purpose
         instead of accidentally stumbling into the best move. Everything is
         still capped by budget_ms so nothing hangs."""
-        k = 20 if level <= 2 else (8 if level <= 5 else (6 if level <= 8 else 3))
+        k = 24 if level <= 0 else (20 if level <= 2 else
+            (8 if level <= 5 else (6 if level <= 8 else 3)))
         d = max(6 if level <= 5 else 4, depth or depth_for(level))
         lines = self._search(fen, d, timeout=budget_ms / 1000 + 2,
                              multipv=k, movetime=budget_ms)
@@ -249,7 +250,9 @@ class Engine:
         if not lines or not legal:
             return random.choice(legal).uci() if legal else None
         n = len(lines)
-        if level <= 2:
+        if level <= 0:
+            pool = [n - 1]                               # the worst one, always
+        elif level <= 2:
             pool = list(range(max(0, n - 3), n))          # the worst of twenty
         elif level <= 5:
             pool = list(range(max(0, n - 5), max(1, n - 2)))
@@ -263,6 +266,9 @@ class Engine:
             pool = [0]
         if level <= 3:
             gifts = material_gifts(chess.Board(fen))
+            if level <= 0:
+                if gifts:                                # give away the most
+                    return gifts[0][1].uci()
             chance = 0.55 if level <= 1 else (0.35 if level == 2 else 0.2)
             if gifts and random.random() < chance:
                 return random.choice([m.uci() for _, m in gifts[:3]])
@@ -2704,7 +2710,7 @@ class CoachApp:
                 lbl.configure(text=f"{vals[k]:>2}")
 
         def bump(k, d):
-            vals[k] = max(1, min(20, vals[k] + d))
+            vals[k] = max(0, min(20, vals[k] + d))
             show()
 
         tk.Label(win, text="everyone plays everyone", bg=CARD, fg=MUTED,
@@ -2834,10 +2840,18 @@ class CoachApp:
         v = int(float(value))
         self.settings["difficulty"] = v
         self.save_settings()
-        names = {1: "beginner", 4: "beginner", 7: "casual", 10: "club",
-                 14: "strong", 20: "ruthless"}
-        name = "ruthless" if v > 15 else "strong" if v > 11 else "club" if v > 7 \
-            else "casual" if v > 3 else "beginner"
+        if v <= 0:
+            name = "hopeless"
+        elif v <= 3:
+            name = "beginner"
+        elif v <= 7:
+            name = "casual"
+        elif v <= 11:
+            name = "club"
+        elif v <= 15:
+            name = "strong"
+        else:
+            name = "ruthless"
         self.diff_lbl.configure(text=f"{name} · {v}")
         self.lvl_tag.configure(text=name.upper())
         if hasattr(self, "diffbar"):
@@ -2863,7 +2877,7 @@ class CoachApp:
             return
         h, x0, x1 = 30, 10, w - 10
         y = h // 2
-        t = max(0.0, min(1.0, (self.settings["difficulty"] - 1) / 19))
+        t = max(0.0, min(1.0, self.settings["difficulty"] / 20))
         # dim track
         c.create_line(x0, y, x1, y, fill="#2b3242", width=10, capstyle="round")
         # live gradient up to the handle
@@ -2880,7 +2894,7 @@ class CoachApp:
         if w < 40:
             return
         t = max(0.0, min(1.0, (e.x - 10) / (w - 20)))
-        self.on_diff(str(round(1 + t * 19)))
+        self.on_diff(str(round(t * 20)))
 
     def on_theme(self):
         self.settings["theme"] = self.theme_var.get()

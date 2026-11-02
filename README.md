@@ -98,7 +98,8 @@ Two things make the ratings trustworthy:
 1. **Analysis always runs at Skill Level 20.** Stockfish's lowered skill levels
    deliberately fuzz the score they report, which turns shallow noise into fake
    mistakes. Weakness belongs in move selection, not in the evaluator.
-**Difficulty is not dice.** Level 1 deliberately gives material away (it
+**Difficulty is not dice.** Level 0 plays the worst move it can find, every
+time. Level 1 deliberately gives material away (it
 picks from moves that leave a piece hanging); as the level rises the bot picks
 closer and closer to the engine's top move, and 20 always plays the best line.
 Every search is capped in wall-clock time, so a slow position shortens the
