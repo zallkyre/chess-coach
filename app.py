@@ -616,6 +616,7 @@ class CoachApp:
         self.hint_cache = None
         self.hint_armed = False
         self.threat_arrows = []
+        self.user_arrows = []          # right-drag arrows, survive every move
         self.chat_log = []
         self.photo = {}
         self._drag = None
@@ -707,6 +708,9 @@ class CoachApp:
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_motion)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<ButtonPress-3>", self.on_right_press)
+        self.canvas.bind("<B3-Motion>", self.on_right_motion)
+        self.canvas.bind("<ButtonRelease-3>", self.on_right_release)
 
         self.capstrip = tk.Label(left, text="", bg=BG, fg="#8d96a8",
                                  font=("Consolas", 10), height=2)
@@ -1112,9 +1116,53 @@ class CoachApp:
                             tags=("pc", f"sq{sq}"))
 
         self.draw_threats()
+        self.draw_user_arrows()
         self.update_evalbar()
         self.update_captures()
         self.update_turn()
+
+    # ---------------- hand-drawn arrows ----------------
+    def on_right_press(self, e):
+        self._arrow_from = self.xy_sq(e.x, e.y)
+        self.canvas.delete("arrow-preview")
+
+    def on_right_motion(self, e):
+        src = getattr(self, "_arrow_from", None)
+        if src is None:
+            return
+        self.canvas.delete("arrow-preview")
+        x1, y1 = self.center(src)
+        self.canvas.create_line(x1, y1, e.x, e.y, fill="#e8a13a", width=7,
+                                arrow="last", arrowshape=(15, 19, 6),
+                                tags="arrow-preview")
+
+    def on_right_release(self, e):
+        src = getattr(self, "_arrow_from", None)
+        self._arrow_from = None
+        self.canvas.delete("arrow-preview")
+        if src is None:
+            return
+        dst = self.xy_sq(e.x, e.y)
+        if dst is None:
+            return                      # dragged off the board: cancel
+        if dst == src:
+            self.user_arrows = []       # right click without a drag clears them
+        else:
+            pair = (src, dst)
+            if pair in self.user_arrows:
+                self.user_arrows.remove(pair)
+            else:
+                self.user_arrows.append(pair)
+        self.render()
+
+    def draw_user_arrows(self):
+        self.canvas.delete("arrow")
+        for a, b in self.user_arrows:
+            x1, y1 = self.center(a)
+            x2, y2 = self.center(b)
+            self.canvas.create_line(x1, y1, x2, y2, fill="#e8a13a", width=7,
+                                    arrow="last", arrowshape=(15, 19, 6),
+                                    tags="arrow")
 
     def draw_threats(self):
         cv = self.canvas
@@ -1709,6 +1757,7 @@ class CoachApp:
         self.review_bar.pack_forget()
         self.review_acc = None
         self.review_ray = None
+        self.user_arrows = []
         self.board.reset()
         self.stack = []
         self.selected = None

@@ -36,6 +36,9 @@ else is touched.
   minus its score for yours, so tempo is never counted as a mistake
 - **Threat arrows**: real legal attack generation, not a guess. Enemy pieces
   that can take something of yours get a red arrow, worst victim first
+- **Draw your own arrows**: right-click drag from square to square. They stay
+  put through moves, undo, flips and theme changes. Right-drag the same arrow
+  again to remove it, or right-click a square without dragging to clear all
 - **Hint**: first press points at the piece, second press names the move
 - **Revert**: the button, or click any move in the list to rewind there
 - **Drag or click** to move, legal-move dots, last-move and check highlights
