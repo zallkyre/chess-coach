@@ -241,7 +241,7 @@ class Engine:
         down the engine's own ranking, so a weak bot plays badly on purpose
         instead of accidentally stumbling into the best move. Everything is
         still capped by budget_ms so nothing hangs."""
-        k = 10 if level <= 2 else (8 if level <= 5 else (6 if level <= 8 else 3))
+        k = 20 if level <= 2 else (8 if level <= 5 else (6 if level <= 8 else 3))
         d = max(6 if level <= 5 else 4, depth or depth_for(level))
         lines = self._search(fen, d, timeout=budget_ms / 1000 + 2,
                              multipv=k, movetime=budget_ms)
@@ -250,7 +250,7 @@ class Engine:
             return random.choice(legal).uci() if legal else None
         n = len(lines)
         if level <= 2:
-            pool = list(range(max(0, n - 3), n))          # the worst of ten
+            pool = list(range(max(0, n - 3), n))          # the worst of twenty
         elif level <= 5:
             pool = list(range(max(0, n - 5), max(1, n - 2)))
         elif level <= 8:
@@ -263,7 +263,7 @@ class Engine:
             pool = [0]
         if level <= 3:
             gifts = material_gifts(chess.Board(fen))
-            chance = 0.7 if level <= 1 else (0.45 if level == 2 else 0.25)
+            chance = 0.55 if level <= 1 else (0.35 if level == 2 else 0.2)
             if gifts and random.random() < chance:
                 return random.choice([m.uci() for _, m in gifts[:3]])
         pick = random.choice([i for i in pool if i < n] or [0])
@@ -616,7 +616,7 @@ COL = {"brilliant": "#26c2a3", "great": "#5b9bd5", "best": "#7fb14a",
        "excellent": "#96bc4b", "good": "#8fae84", "book": "#a4835f",
        "inaccuracy": "#f2c231", "mistake": "#e08a2e", "miss": "#e0584a",
        "blunder": "#cf4b42", "forced": "#8a93a6", "opp": "#8a93a6"}
-GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "+",
+GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "↑",
          "good": "·", "book": "≡", "inaccuracy": "?!", "mistake": "?",
          "miss": "✗", "blunder": "??", "forced": "="}
 
@@ -787,11 +787,9 @@ def grade_move(loss, is_best, gap, best_cp, played_cp, best_mate, sac, book, onl
     if is_best:
         if played_cp >= 9900:               # mate on the board, nothing to style
             return "best"
-        if sac:
+        if sac and played_cp >= -50:        # really hanging material, still fine
             return "brilliant"
         return "great" if gap >= 150 else "best"
-    if sac and loss <= 30:
-        return "brilliant"
     return classify(loss, False)
 
 
