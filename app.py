@@ -235,27 +235,42 @@ class Engine:
 
     def play(self, fen: str, level: int, depth: int | None = None,
              ms: int = MOVE_TIME_MS, budget_ms: int = 1400):
-        """Pick a move at a given strength. Never full strength, never longer
-        than budget_ms - slow positions get a shorter look, not a freeze."""
-        with self.lock:
-            best = None
-            self.skill(level)
-            self.send("position fen " + fen)
-            go = (f"go depth {depth} movetime {budget_ms}" if depth
-                  else f"go movetime {min(ms, budget_ms)}")
-            self.send(go)
-            end = time.time() + budget_ms / 1000 + 1.2
-            while time.time() < end:
-                try:
-                    line = self.q.get(timeout=max(0.01, end - time.time()))
-                except queue.Empty:
-                    break
-                if line.startswith("bestmove"):
-                    parts = line.split()
-                    best = parts[1] if len(parts) > 1 else None
-                    break
-            self.skill(20)
-            return None if not best or best == "(none)" else best
+        """Pick a move at a given strength.
+
+        Weak levels do not roll dice - they deliberately take a move further
+        down the engine's own ranking, so a weak bot plays badly on purpose
+        instead of accidentally stumbling into the best move. Everything is
+        still capped by budget_ms so nothing hangs."""
+        k = 10 if level <= 2 else (8 if level <= 5 else (6 if level <= 8 else 3))
+        d = max(6 if level <= 5 else 4, depth or depth_for(level))
+        lines = self._search(fen, d, timeout=budget_ms / 1000 + 2,
+                             multipv=k, movetime=budget_ms)
+        legal = list(chess.Board(fen).legal_moves)
+        if not lines or not legal:
+            return random.choice(legal).uci() if legal else None
+        n = len(lines)
+        if level <= 2:
+            pool = list(range(max(0, n - 3), n))          # the worst of ten
+        elif level <= 5:
+            pool = list(range(max(0, n - 5), max(1, n - 2)))
+        elif level <= 8:
+            pool = list(range(1, min(n, 4)))
+        elif level <= 12:
+            pool = list(range(0, min(n, 3)))
+        elif level <= 16:
+            pool = list(range(0, min(n, 2)))
+        else:
+            pool = [0]
+        if level <= 3:
+            gifts = material_gifts(chess.Board(fen))
+            chance = 0.7 if level <= 1 else (0.45 if level == 2 else 0.25)
+            if gifts and random.random() < chance:
+                return random.choice([m.uci() for _, m in gifts[:3]])
+        pick = random.choice([i for i in pool if i < n] or [0])
+        uci = lines[pick].get("uci")
+        if not uci or chess.Move.from_uci(uci) not in legal:
+            uci = random.choice(legal).uci()
+        return uci
 
     def best_move(self, fen: str, ms: int = 2500):
         """Full-strength move plus its score, for hints and for grading a move
@@ -701,6 +716,35 @@ OPENINGS = [
     ("King's Indian Attack", "Nf3 d5 g3 Nf6 Bg2 e6 O-O Be7"),
     ("Reti Opening", "Nf3 Nf6 c4 e6 g3 d5 Bg2 Be7"),
 ]
+
+
+def material_gifts(board):
+    """Moves that leave something of yours hanging, worst first. Weak bots use
+    this so they play like a beginner, not like a coin flip."""
+    out = []
+    for move in board.legal_moves:
+        after = board.copy(stack=False)
+        after.push(move)
+        worst = 0
+        for reply in after.legal_moves:
+            if not after.is_capture(reply):
+                continue
+            victim = after.piece_at(reply.to_square)
+            gain = PIECE_VALUE.get(victim.piece_type, 1) if victim else 1
+            if after.is_en_passant(reply):
+                gain = 1
+            nxt = after.copy(stack=False)
+            nxt.push(reply)
+            defenders = nxt.attackers(board.turn, reply.to_square)
+            if defenders:
+                cheapest = min(PIECE_VALUE.get(nxt.piece_at(d).piece_type, 0)
+                               for d in defenders)
+                gain -= cheapest
+            worst = max(worst, gain)
+        if worst >= 1:
+            out.append((worst, move))
+    out.sort(key=lambda pair: pair[0], reverse=True)
+    return out
 
 
 def _book_index():
@@ -1788,14 +1832,7 @@ class CoachApp:
 
     def _engine_reply(self, epoch, fen):
         level = self.settings["difficulty"]
-        move = None
-        chance = random_chance(level)
-        if chance and random.random() < chance:
-            legal = list(chess.Board(fen).legal_moves)
-            if legal:
-                move = random.choice(legal).uci()
-        if move is None:
-            move = self.engine.play(fen, level, depth_for(level), budget_ms=1400)
+        move = self.engine.play(fen, level, depth_for(level), budget_ms=1400)
         if not move or chess.Move.from_uci(move) not in chess.Board(fen).legal_moves:
             legal = list(chess.Board(fen).legal_moves)
             move = random.choice(legal).uci() if legal else None
