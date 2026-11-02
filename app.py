@@ -601,7 +601,7 @@ COL = {"brilliant": "#26c2a3", "great": "#5b9bd5", "best": "#7fb14a",
        "excellent": "#96bc4b", "good": "#8fae84", "book": "#a4835f",
        "inaccuracy": "#f2c231", "mistake": "#e08a2e", "miss": "#e0584a",
        "blunder": "#cf4b42", "forced": "#8a93a6", "opp": "#8a93a6"}
-GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "✓",
+GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "+",
          "good": "·", "book": "≡", "inaccuracy": "?!", "mistake": "?",
          "miss": "✗", "blunder": "??", "forced": "="}
 
@@ -904,8 +904,10 @@ class CoachApp:
                                                fill="#6f7a90", font=("Consolas", 7, "bold"))
         self.opening_lbl = self.info.create_text(20, 34, anchor="w", text="—",
                                                  fill=TEXT, font=("Segoe UI", 10, "bold"))
-        self.gambit_lbl = self.info.create_text(20, 52, anchor="w", text="",
-                                                fill="#d8a45c", font=("Consolas", 7))
+        self.gam_head = self.info.create_text(300, 16, anchor="w", text="GAMBIT",
+                                              fill="#6f7a90", font=("Consolas", 7, "bold"))
+        self.gambit_lbl = self.info.create_text(300, 34, anchor="w", text="—",
+                                                fill=TEXT, font=("Segoe UI", 10, "bold"))
         self.acc_lbl = self.info.create_text(330, 16, anchor="w", text="ACCURACY",
                                              fill="#6f7a90", font=("Consolas", 7, "bold"))
         self.acc_val = self.info.create_text(330, 34, anchor="w", text="—",
@@ -917,8 +919,11 @@ class CoachApp:
                 return
             self._info_img = ImageTk.PhotoImage(
                 rounded_patch(w, 58, 16, CARD, LINE, 1))
-            self.info.coords(self.acc_lbl, w - 170, 16)
-            self.info.coords(self.acc_val, w - 170, 34)
+            mid = int(w * 0.42)
+            self.info.coords(self.gam_head, mid, 16)
+            self.info.coords(self.gambit_lbl, mid, 34)
+            self.info.coords(self.acc_lbl, w - 150, 16)
+            self.info.coords(self.acc_val, w - 150, 34)
             self.info.delete("bg")
             self.info.create_image(0, 0, image=self._info_img, anchor="nw", tags="bg")
             self.info.tag_lower("bg")
@@ -2188,9 +2193,10 @@ class CoachApp:
         name = opening_for(sans)
         self.info.itemconfigure(self.opening_lbl, text=name or "—")
         gambit = bool(name and "Gambit" in name)
-        self.info.itemconfigure(self.gambit_lbl,
-                                text="gambit accepted" if gambit else
-                                     ("no gambit" if name else ""))
+        self.info.itemconfigure(
+            self.gambit_lbl,
+            text="yes" if gambit else ("no" if name else "—"),
+            fill="#d8a45c" if gambit else (TEXT if name else "#6f7a90"))
         acc = self.accuracy()
         self.info.itemconfigure(self.acc_val, text=f"{acc}%" if acc is not None else "—")
 
