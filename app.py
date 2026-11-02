@@ -265,10 +265,24 @@ class Engine:
         else:
             pool = [0]
         if level <= 3:
-            gifts = material_gifts(chess.Board(fen))
+            board_now = chess.Board(fen)
+            gifts = material_gifts(board_now)
             if level <= 0:
-                if gifts:                                # give away the most
-                    return gifts[0][1].uci()
+                # greedy to a fault: any capture on the board gets taken,
+                # biggest piece first, and a losing one is even better. this is
+                # how a gambit gets accepted and a trap gets sprung.
+                net = {mv: n for n, mv in gifts}
+                caps = [m for m in board_now.legal_moves
+                        if board_now.is_capture(m)]
+                if caps:
+                    def bait_key(m):
+                        victim = board_now.piece_at(m.to_square)
+                        value = 1 if board_now.is_en_passant(m) else (
+                            PIECE_VALUE.get(victim.piece_type, 1) if victim else 1)
+                        return (-value, -net.get(m, 0), m.uci())
+                    return sorted(caps, key=bait_key)[0].uci()
+                if gifts:
+                    return gifts[0][1].uci()                 # give away the most
             chance = 0.55 if level <= 1 else (0.35 if level == 2 else 0.2)
             if gifts and random.random() < chance:
                 return random.choice([m.uci() for _, m in gifts[:3]])
