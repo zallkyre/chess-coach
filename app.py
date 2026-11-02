@@ -782,16 +782,22 @@ BOOK_MOVES, BOOK_NAME = _book_index()
 
 
 def opening_for(sans):
-    """Longest known opening that matches, but only once it is really a line."""
+    """Longest known opening that matches. Needs three plies of agreement
+    before it is willing to put a name on it - 1.d4 alone is not a system."""
     played = tuple(sans)
-    if len(played) < 4:
-        return None
     best = None
     for pref, name in BOOK_NAME.items():
-        if len(pref) <= len(played) and played[:len(pref)] == pref:
+        if len(pref) < 3 or len(pref) > len(played):
+            continue
+        if played[:len(pref)] == pref:
             if best is None or len(pref) > best[0]:
                 best = (len(pref), name)
     return best[1] if best else None
+
+
+def is_gambit(name):
+    """A declined gambit is not a gambit."""
+    return bool(name) and "Gambit" in name and "Declined" not in name
 
 
 def grade_move(loss, is_best, gap, best_cp, played_cp, best_mate, sac, book, only):
@@ -2411,7 +2417,7 @@ class CoachApp:
         sans = [r["san"] for r in self.stack]
         name = opening_for(sans)
         self.info.itemconfigure(self.opening_lbl, text=name or "—")
-        gambit = bool(name and "Gambit" in name)
+        gambit = is_gambit(name)
         self.info.itemconfigure(
             self.gambit_lbl,
             text="yes" if gambit else ("no" if name else "—"),
