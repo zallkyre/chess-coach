@@ -158,7 +158,8 @@ class Engine:
     def skill(self, level: int):
         self.send(f"setoption name Skill Level value {max(0, min(20, int(level)))}")
 
-    def _search(self, fen: str, depth: int, timeout=12.0, moves=None, multipv=1):
+    def _search(self, fen: str, depth=None, timeout=12.0, moves=None,
+                multipv=1, movetime=None):
         """One bounded search. Returns lines, best first:
         [{"cp": white-view int, "mate": int | None, "uci": str}]"""
         with self.lock:
@@ -166,7 +167,12 @@ class Engine:
             self.skill(20)                     # fuzzed scores would poison grading
             self.send(f"setoption name MultiPV value {max(1, int(multipv))}")
             self.send("position fen " + fen)
-            go = f"go depth {depth}" + (f" searchmoves {moves}" if moves else "")
+            if movetime:
+                go = f"go movetime {int(movetime)}"
+            else:
+                go = f"go depth {depth}"
+            if moves:
+                go += f" searchmoves {moves}"
             self.send(go)
             end = time.time() + timeout
             while time.time() < end:
@@ -248,25 +254,14 @@ class Engine:
             return None if not best or best == "(none)" else best
 
     def best_move(self, fen: str, ms: int = 2500):
-        """Strongest move we can afford in a couple of seconds. Used by Hint,
-        never skill-limited, never depth-capped low."""
-        with self.lock:
-            best = None
-            self.skill(20)
-            self.send("setoption name MultiPV value 1")
-            self.send("position fen " + fen)
-            self.send(f"go movetime {int(ms)}")
-            end = time.time() + ms / 1000 + 2
-            while time.time() < end:
-                try:
-                    line = self.q.get(timeout=max(0.01, end - time.time()))
-                except queue.Empty:
-                    break
-                if line.startswith("bestmove"):
-                    parts = line.split()
-                    best = parts[1] if len(parts) > 1 else None
-                    break
-            return None if not best or best == "(none)" else best
+        """Full-strength move plus its score, for hints and for grading a move
+        the player already asked about. Returns a dict or None."""
+        lines = self._search(fen, timeout=ms / 1000 + 3, multipv=2, movetime=ms)
+        if not lines:
+            return None
+        top = lines[0]
+        return {"uci": top["uci"], "cp": top["cp"], "mate": top["mate"],
+                "cp2": lines[1]["cp"] if len(lines) > 1 else None}
 
     def close(self):
         try:
@@ -784,6 +779,7 @@ class CoachApp:
         self.review_ply = 0
         self.review_acc = None
         self.review_ray = None
+        self.hint_info = None
         self._auto_job = None
         self.hint_cache = None
         self.hint_armed = False
@@ -891,9 +887,9 @@ class CoachApp:
                         continue
                     if fen in self.best_cache:
                         continue
-                    uci = self.engine.best_move(fen, 900)
-                    if uci:
-                        self.best_cache[fen] = uci
+                    info = self.engine.best_move(fen, 900)
+                    if info and info.get("uci"):
+                        self.best_cache[fen] = info
                         if len(self.best_cache) > 200:
                             self.best_cache.pop(next(iter(self.best_cache)))
                 elif kind == "deep":
@@ -905,7 +901,7 @@ class CoachApp:
                         sans, mover_color=rec["color"])
                     rec["deep"] = {"cls": cls, "loss": loss, "best": best}
                     if best:
-                        self.best_cache.setdefault(rec["fen"], best)
+                        self.best_cache.setdefault(rec["fen"], {"uci": best})
             except Exception:
                 pass
             self._queued.discard((kind, payload[0]) if kind == "best"
@@ -1681,6 +1677,22 @@ class CoachApp:
                "cls": None, "loss": 0, "only": only,
                "color": not self.board.turn, "ep": ep}
         self.stack.append(rec)
+        hint = getattr(self, "hint_info", None)
+        if (hint and hint.get("fen") == fen_before and hint.get("uci") == move.uci()
+                and hint.get("cp") is not None):
+            sign = 1 if self.player_color == chess.WHITE else -1
+            best_cp = sign * hint.get("cp", 0)
+            second = hint.get("cp2")
+            gap = max(0, best_cp - sign * second) if second is not None else 0
+            rec["presolved"] = {
+                "cls": grade_move(loss=0, is_best=True, gap=gap, best_cp=best_cp,
+                                  played_cp=best_cp, best_mate=hint.get("mate"),
+                                  sac=is_sacrifice(chess.Board(fen_before), move),
+                                  book=tuple(r["san"] for r in self.stack) in BOOK_MOVES,
+                                  only=only),
+                "loss": 0, "cp": hint.get("cp", 0), "best": move.uci()}
+            rec["best"] = move.uci()
+        self.hint_info = None
         self.render_moves()
         self.render()
         self.busy = True
@@ -1726,12 +1738,16 @@ class CoachApp:
         if not self.stack or self.stack[-1] is not rec:
             return                   # the move was already taken back
         sans = [r["san"] for r in self.stack]        # includes this move
-        try:
-            cls, loss, cp_white, best = self.rate(rec["fen"], move, only,
-                                                  GRADE_DEPTH, sans)
-            rec["best"] = best
-        except Exception:
-            cls, loss, cp_white = "good", 0, self.last_eval
+        pre = rec.get("presolved")
+        if pre:                      # this is the hinted move, already solved
+            cls, loss, cp_white, best = pre["cls"], pre["loss"], pre["cp"], pre["best"]
+        else:
+            try:
+                cls, loss, cp_white, best = self.rate(rec["fen"], move, only,
+                                                      GRADE_DEPTH, sans)
+                rec["best"] = best
+            except Exception:
+                cls, loss, cp_white = "good", 0, self.last_eval
         sign = 1 if self.player_color == chess.WHITE else -1
         self.pre_eval = sign * cp_white
         self.ui(lambda: self.after_grade(cp_white, cls, loss, move, epoch, rec))
@@ -1744,7 +1760,7 @@ class CoachApp:
         rec["loss"] = loss
         rec["deep"] = {"cls": cls, "loss": loss, "best": rec.get("best")}
         if rec.get("best"):
-            self.best_cache.setdefault(rec["fen"], rec["best"])
+            self.best_cache.setdefault(rec["fen"], {"uci": rec["best"]})
         self.set_rating(cls, loss)
         self.render_moves()
         self.render()
@@ -1791,11 +1807,12 @@ class CoachApp:
             return
         fen_before = self.board.fen()
         san = self.board.san(move)
+        ep = self.board.is_en_passant(move)
         self.board.push(move)
         self.last_move = move
         self.stack.append({"move": move, "san": san, "fen": fen_before,
                            "cls": "opp", "loss": 0, "only": False,
-                           "color": not self.board.turn})
+                           "color": not self.board.turn, "ep": ep})
         self.render_moves()
         self.render()
 
@@ -2197,6 +2214,8 @@ class CoachApp:
 
         threading.Thread(target=boot, daemon=True).start()
         self.best_cache.clear()
+        self._queued.clear()
+        self.hint_info = None
         self.schedule_prefetch()
 
     def _set_eval(self, cp):
@@ -2236,6 +2255,7 @@ class CoachApp:
         self.selected = None
         self.hint_cache = None
         self.hint_armed = False
+        self.hint_info = None
         self.canvas.delete("hint")
         self.set_analyze_state()
         self.say("took it back. we don't talk about it.")
@@ -2261,16 +2281,17 @@ class CoachApp:
             return
         fen = self.board.fen()
         cached = self.best_cache.get(fen)
-        if cached:
-            self._show_hint(cached, fen)      # already worked out in the background
+        if cached and cached.get("uci"):
+            self.hint_info = dict(cached, fen=fen)
+            self._show_hint(cached["uci"], fen)   # already worked out
             return
         self.say("thinking properly this time — a couple of seconds…")
 
         def work():
-            best = self.engine.best_move(fen, 2500)
-            if best:
-                self.best_cache[fen] = best
-            self.ui(lambda: self._show_hint(best, fen))
+            info = self.engine.best_move(fen, 2500)
+            if info and info.get("uci"):
+                self.best_cache[fen] = info
+            self.ui(lambda: self._show_hint((info or {}).get("uci"), fen))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2284,6 +2305,9 @@ class CoachApp:
     def _show_hint(self, best, fen=None):
         if fen is not None and fen != self.board.fen():
             return                     # board moved on while we were thinking
+        info = self.best_cache.get(fen or "")
+        if info and info.get("uci") == best:
+            self.hint_info = dict(info, fen=fen)
         if not best:
             self.say("i've got nothing. worrying for both of us.")
             return
@@ -2441,7 +2465,8 @@ class CoachApp:
                 return uci
 
         if re.search(r"\b(hint|best|play|move|what should|suggest)\b", t):
-            best = self.engine.best_move(snap["fen"], 2200)
+            hint = self.engine.best_move(snap["fen"], 2200)
+            best = (hint or {}).get("uci")
             if not best:
                 return "no legal move worth suggesting. that's a first."
             mv = chess.Move.from_uci(best)
