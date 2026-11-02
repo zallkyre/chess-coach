@@ -61,6 +61,10 @@ else is touched.
   background thread, and the engine's best move for the current position is
   cached. Pressing Analyze then takes about a hundredth of a second, and Hint
   answers from cache instead of searching
+- **Bot vs bot**: the **BOTS** side button opens a small dialog where you set
+  white's level and black's level, then the app plays both sides and grades
+  every move. No engine search is ever allowed to run past 1.4 seconds, so a
+  hard position shortens the think instead of freezing the board
 - **Side buttons** next to the board: **LOCK** pins the window on top until you
   press it again, **FEN** copies the position, the theme button cycles board
   colors, **FULL** maximizes the window

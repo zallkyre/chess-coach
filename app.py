@@ -233,14 +233,18 @@ class Engine:
             played = played_lines[0] if played_lines else None
         return {"best": best, "second": second, "played": played}
 
-    def play(self, fen: str, level: int, depth: int | None = None, ms: int = MOVE_TIME_MS):
-        """Pick a move at a given strength. Never full strength."""
+    def play(self, fen: str, level: int, depth: int | None = None,
+             ms: int = MOVE_TIME_MS, budget_ms: int = 1400):
+        """Pick a move at a given strength. Never full strength, never longer
+        than budget_ms - slow positions get a shorter look, not a freeze."""
         with self.lock:
             best = None
             self.skill(level)
             self.send("position fen " + fen)
-            self.send(f"go depth {depth}" if depth else f"go movetime {ms}")
-            end = time.time() + (6.0 if depth else ms / 1000 + 6)
+            go = (f"go depth {depth} movetime {budget_ms}" if depth
+                  else f"go movetime {min(ms, budget_ms)}")
+            self.send(go)
+            end = time.time() + budget_ms / 1000 + 1.2
             while time.time() < end:
                 try:
                     line = self.q.get(timeout=max(0.01, end - time.time()))
@@ -780,6 +784,8 @@ class CoachApp:
         self.review_acc = None
         self.review_ray = None
         self.hint_info = None
+        self.bot_mode = False
+        self.bot_job = None
         self._auto_job = None
         self.hint_cache = None
         self.hint_armed = False
@@ -1009,6 +1015,7 @@ class CoachApp:
         self.side_btns = {}
         for key, text, cmd in (("lock", "LOCK", self.toggle_lock),
                                ("fen", "FEN", self.copy_fen),
+                               ("bots", "BOTS", self.bot_toggle),
                                ("theme", "GREEN", self.cycle_theme),
                                ("full", "FULL", self.toggle_full)):
             b = RoundButton(bar, text=text, command=cmd, width=SIDEBAR_W,
@@ -1582,7 +1589,7 @@ class CoachApp:
 
     # ---------------- input ----------------
     def on_press(self, e):
-        if self.busy or self.game_over or self.reviewing:
+        if self.busy or self.game_over or self.reviewing or self.bot_mode:
             return
         if self.board.turn != self.player_color:
             return
@@ -1788,7 +1795,10 @@ class CoachApp:
             if legal:
                 move = random.choice(legal).uci()
         if move is None:
-            move = self.engine.play(fen, level, depth_for(level))
+            move = self.engine.play(fen, level, depth_for(level), budget_ms=1400)
+        if not move or chess.Move.from_uci(move) not in chess.Board(fen).legal_moves:
+            legal = list(chess.Board(fen).legal_moves)
+            move = random.choice(legal).uci() if legal else None
         time.sleep(0.30)          # let the player's own move land before the answer
         self.ui(lambda: self.after_reply(move, epoch))
 
@@ -2180,6 +2190,13 @@ class CoachApp:
 
     # ---------------- controls ----------------
     def new_game(self, first=False):
+        self.bot_mode = False
+        if self.bot_job:
+            try:
+                self.root.after_cancel(self.bot_job)
+            except Exception:
+                pass
+            self.bot_job = None
         if not first and self.stack and not self.game_over:
             if not messagebox.askyesno(APP, "Abandon this game?"):
                 return
@@ -2628,6 +2645,154 @@ class CoachApp:
         self.center_dialog(win)
         win.wait_window()
         self.update_provider_status()
+
+    # ---------------- bot vs bot ----------------
+    def bot_toggle(self):
+        if self.bot_mode:
+            self.stop_bots()
+            return
+        self.bot_dialog()
+
+    def bot_dialog(self):
+        win = tk.Toplevel(self.root)
+        win.title("Bot vs bot")
+        win.configure(bg=CARD)
+        win.transient(self.root)
+        win.grab_set()
+        win.resizable(False, False)
+        vals = {"w": int(self.settings.get("bot_white", 8)),
+                "b": int(self.settings.get("bot_black", 8))}
+        labels = {}
+
+        def show():
+            for k, lbl in labels.items():
+                lbl.configure(text=f"{vals[k]:>2}")
+
+        def bump(k, d):
+            vals[k] = max(1, min(20, vals[k] + d))
+            show()
+
+        tk.Label(win, text="everyone plays everyone", bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(padx=20, pady=(16, 4))
+        for key, name in (("w", "WHITE"), ("b", "BLACK")):
+            row = tk.Frame(win, bg=CARD)
+            row.pack(fill="x", padx=20, pady=6)
+            tk.Label(row, text=name, bg=CARD, fg=MUTED, width=6, anchor="w",
+                     font=("Consolas", 8, "bold")).pack(side="left")
+            RoundButton(row, text="−", width=32, height=30, radius=10,
+                        fill=CARD2, fg=TEXT, bg=CARD,
+                        command=lambda k=key: bump(k, -1)).pack(side="left")
+            lbl = tk.Label(row, text=f"{vals[key]:>2}", bg=CARD, fg=TEXT, width=3,
+                           font=("Consolas", 12, "bold"))
+            lbl.pack(side="left", padx=8)
+            labels[key] = lbl
+            RoundButton(row, text="+", width=32, height=30, radius=10,
+                        fill=CARD2, fg=TEXT, bg=CARD,
+                        command=lambda k=key: bump(k, 1)).pack(side="left")
+
+        def start():
+            win.destroy()
+            self.start_bots(vals["w"], vals["b"])
+
+        RoundButton(win, text="Start", width=110, height=34, radius=14,
+                    fill="#7ec96b", fg="#0d1117", bg=CARD,
+                    font=("Segoe UI", 9, "bold"), command=start).pack(pady=(10, 16))
+        self.center_dialog(win)
+        win.wait_window()
+
+    def start_bots(self, white_level, black_level):
+        self.settings["bot_white"] = white_level
+        self.settings["bot_black"] = black_level
+        self.save_settings()
+        self.new_game()
+        self.bot_mode = True
+        self.set_analyze_state()
+        self.chip.configure(text="bots", bg="#5b9bd5", fg="#0d1117")
+        self.rate_lbl.configure(text=f"white {white_level} vs black {black_level}")
+        self.say("no humans. white is level " f"{white_level}, black is level {black_level}.")
+        self.root.after(400, self.bot_tick)
+
+    def stop_bots(self):
+        self.bot_mode = False
+        if self.bot_job:
+            try:
+                self.root.after_cancel(self.bot_job)
+            except Exception:
+                pass
+        self.bot_job = None
+        self.chip.configure(text="ready", bg="#2a3040", fg="#aab3c4")
+        self.rate_lbl.configure(text="bots stopped")
+        self.say("bots off. back to you, i suppose.")
+
+    def bot_tick(self):
+        self.bot_job = None
+        if not self.bot_mode or self.game_over:
+            return
+        if self.busy or self.reviewing:
+            self.bot_job = self.root.after(200, self.bot_tick)
+            return
+        side = self.board.turn
+        level = (self.settings.get("bot_white", 8) if side == chess.WHITE
+                 else self.settings.get("bot_black", 8))
+        fen = self.board.fen()
+        epoch = self.epoch
+        self.busy = True
+        self.engine_lbl.configure(text="thinking…", fg="#dfbe57")
+        threading.Thread(target=self._bot_think, args=(fen, level, side, epoch),
+                         daemon=True).start()
+
+    def _bot_think(self, fen, level, side, epoch):
+        uci = self.engine.play(fen, level, depth_for(level), budget_ms=1200)
+        board = chess.Board(fen)
+        if not uci or chess.Move.from_uci(uci) not in board.legal_moves:
+            legal = list(board.legal_moves)
+            uci = random.choice(legal).uci() if legal else None
+        res = None
+        if uci:
+            try:
+                move = chess.Move.from_uci(uci)
+                sans = [r["san"] for r in self.stack] + [board.san(move)]
+                res = (uci, self.rate(fen, move, board.legal_moves.count() == 1,
+                                      GRADE_DEPTH, sans, mover_color=side))
+            except Exception:
+                res = (uci, None)
+        self.ui(lambda: self._bot_apply(res, side, epoch))
+
+    def _bot_apply(self, res, side, epoch):
+        if epoch != self.epoch:
+            return
+        if not self.bot_mode or self.game_over:
+            self.busy = False
+            return
+        if not res or not res[0]:
+            self.busy = False
+            return
+        uci, grade = res
+        move = chess.Move.from_uci(uci)
+        if move not in self.board.legal_moves:
+            self.busy = False
+            self.bot_job = self.root.after(300, self.bot_tick)
+            return
+        fen_before = self.board.fen()
+        san = self.board.san(move)
+        ep = self.board.is_en_passant(move)
+        self.board.push(move)
+        self.last_move = move
+        rec = {"move": move, "san": san, "fen": fen_before, "cls": "opp",
+               "loss": 0, "only": False, "color": side, "ep": ep}
+        if grade:
+            cls, loss, _, best = grade
+            rec.update({"cls": cls, "loss": loss, "best": best,
+                        "deep": {"cls": cls, "loss": loss, "best": best}})
+        self.stack.append(rec)
+        self.render_moves()
+        self.render()
+        self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
+        self.busy = False
+        if self.board.is_game_over():
+            self.end_game()
+            return
+        self.bot_job = self.root.after(350, self.bot_tick)
 
     # ---------------- settings handlers ----------------
     def on_diff(self, value):
