@@ -246,6 +246,27 @@ class Engine:
             self.skill(20)
             return None if not best or best == "(none)" else best
 
+    def best_move(self, fen: str, ms: int = 2500):
+        """Strongest move we can afford in a couple of seconds. Used by Hint,
+        never skill-limited, never depth-capped low."""
+        with self.lock:
+            best = None
+            self.skill(20)
+            self.send("setoption name MultiPV value 1")
+            self.send("position fen " + fen)
+            self.send(f"go movetime {int(ms)}")
+            end = time.time() + ms / 1000 + 6
+            while time.time() < end:
+                try:
+                    line = self.q.get(timeout=max(0.01, end - time.time()))
+                except queue.Empty:
+                    break
+                if line.startswith("bestmove"):
+                    parts = line.split()
+                    best = parts[1] if len(parts) > 1 else None
+                    break
+            return None if not best or best == "(none)" else best
+
     def close(self):
         try:
             self.send("quit")
@@ -309,11 +330,153 @@ def draw_piece(kind, color, size):
     return img.resize((size, size), Image.LANCZOS)
 
 
+BG = "#0f1218"
+CARD = "#1a1f29"
+CARD2 = "#242b37"
+LINE = "#2f3746"
+TEXT = "#eaeef6"
+MUTED = "#9aa4b6"
+
+# --------------------------------------------------------------------------
+# antialiased rounded widgets (PIL renders at 4x, then LANCZOS down)
+# --------------------------------------------------------------------------
+def mix_color(a: str, b: str, t: float) -> str:
+    """Blend two #rrggbb colours, t=0 gives a, t=1 gives b."""
+    a = a.lstrip("#"); b = b.lstrip("#")
+    ca = [int(a[i:i + 2], 16) for i in (0, 2, 4)]
+    cb = [int(b[i:i + 2], 16) for i in (0, 2, 4)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(ca, cb))
+
+
+_round_cache = {}
+
+
+def rounded_patch(w, h, radius, fill, outline=None, width=1):
+    """A smooth rounded rectangle. Cached: these are redrawn a lot."""
+    w, h, radius = max(1, int(w)), max(1, int(h)), int(radius)
+    key = (w, h, radius, fill, outline, width)
+    if key in _round_cache:
+        return _round_cache[key]
+    ss = 4
+    img = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, w * ss - 1, h * ss - 1], radius=radius * ss,
+                        fill=fill, outline=outline,
+                        width=max(1, int(width * ss)) if outline else 0)
+    img = img.resize((w, h), Image.LANCZOS)
+    if len(_round_cache) > 400:
+        _round_cache.clear()
+    _round_cache[key] = img
+    return img
+
+
+class RoundButton(tk.Canvas):
+    """A canvas button with a soft rounded, antialiased background."""
+
+    def __init__(self, master, text="", command=None, width=90, height=32,
+                 radius=12, fill=CARD2, fg=TEXT, bg=None, hover=None,
+                 font=("Segoe UI", 9, "bold"), stretch=False):
+        super().__init__(master, width=width, height=height,
+                         bg=bg or master.cget("bg"), highlightthickness=0,
+                         bd=0, cursor="hand2")
+        self._bw, self._bh, self._br = int(width), int(height), int(radius)
+        self._fill, self._fg = fill, fg
+        self._bhover = hover or mix_color(fill, "#ffffff", 0.07)
+        self._text, self._font = text, font
+        self._command = command
+        self._enabled = True
+        self._bhovering = False
+        self._img = None
+        self._stretch = stretch
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<Button-1>", self._click)
+        if stretch:
+            self.bind("<Configure>", self._resize)
+        self.redraw()
+
+    def _set_hover(self, on):
+        self._bhovering = on
+        self.redraw()
+
+    def _resize(self, e):
+        if abs(e.width - self._bw) > 1:
+            self._bw = max(20, e.width)
+            self.redraw()
+
+    def _click(self, _e):
+        if self._enabled and self._command:
+            self._command()
+
+    def redraw(self):
+        if self._bw <= 2 or self._bh <= 2:
+            return
+        fill = self._fill
+        if not self._enabled:
+            fill = mix_color(self._fill, BG, 0.68)
+        elif self._bhovering:
+            fill = self._bhover
+        self.delete("all")
+        self._img = ImageTk.PhotoImage(
+            rounded_patch(self._bw, self._bh, self._br, fill))
+        self.create_image(0, 0, image=self._img, anchor="nw")
+        self.create_text(self._bw / 2, self._bh / 2 + 1, text=self._text,
+                         fill=self._fg if self._enabled else "#6f7789",
+                         font=self._font)
+
+    # tk.Button-ish surface, so the rest of the app can stay as it was
+    def configure(self, **kw):
+        dirty = False
+        for key, attr in (("text", "_text"), ("fg", "_fg"), ("bg", "_fill")):
+            if key in kw:
+                setattr(self, attr, kw.pop(key))
+                dirty = True
+        if "state" in kw:
+            self._enabled = kw.pop("state") != "disabled"
+            self.configure(cursor="hand2" if self._enabled else "arrow")
+            dirty = True
+        if "command" in kw:
+            self._command = kw.pop("command")
+        if dirty:
+            self.redraw()
+        if kw:
+            super().configure(**kw)
+
+    def cget(self, key):
+        if key == "text":
+            return self._text
+        if key == "fg":
+            return self._fg
+        if key == "bg":
+            return self._fill
+        if key == "state":
+            return "normal" if self._enabled else "disabled"
+        return super().cget(key)
+
+    def __getitem__(self, key):
+        return self.cget(key)
+
+    def __setitem__(self, key, value):
+        self.configure(**{key: value})
+
+
+class RoundChip(RoundButton):
+    """Same rounded look, but it is a readout, not a button."""
+
+    def __init__(self, master, text="", width=104, height=28, radius=10,
+                 fill="#2a3040", fg="#aab3c4", font=("Consolas", 8, "bold")):
+        super().__init__(master, text=text, command=None, width=width,
+                         height=height, radius=radius, fill=fill, fg=fg,
+                         font=font)
+        self.unbind("<Button-1>")
+        self.configure(cursor="arrow")
+
+
 # --------------------------------------------------------------------------
 # coach brain (vault-backed, several providers)
 # --------------------------------------------------------------------------
 PROVIDERS = {
-    "groq":       {"label": "Groq",       "base": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-20b", "handle": "groq"},
+    "local":      {"label": "Ray (built-in)", "base": None, "model": "no key needed", "handle": None},
     "openai":     {"label": "OpenAI",     "base": "https://api.openai.com/v1",      "model": "gpt-4o-mini",        "handle": "openai"},
     "openrouter": {"label": "OpenRouter", "base": "https://openrouter.ai/api/v1",   "model": "openai/gpt-oss-20b", "handle": "openrouter"},
     "ollama":     {"label": "Ollama",     "base": "http://127.0.0.1:11434/v1",      "model": "llama3.1",           "handle": None},
@@ -449,13 +612,6 @@ THEMES = {
     "slate": ("#c9cfd8", "#4a5262"),
 }
 
-BG = "#101319"
-CARD = "#1a1e27"
-CARD2 = "#232833"
-LINE = "#2d3341"
-TEXT = "#e8ebf1"
-MUTED = "#98a1b3"
-
 
 def classify(raw_loss, is_best=False):
     loss = max(0, raw_loss - NOISE)
@@ -504,59 +660,74 @@ def is_sacrifice(board: chess.Board, move: chess.Move) -> bool:
     return cheapest_att < cheapest_def
 
 
-# common mainlines, used only for the "Book" badge
-BOOK_LINES = """
-e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O Be7 Re1 b5 Bb3 d6 c3 O-O
-e4 e5 Nf3 Nc6 Bc4 Bc5 c3 Nf6 d3 d6
-e4 e5 Nf3 Nc6 Bc4 Nf6 Ng5 d5 exd5 Na5
-e4 e5 Nf3 Nc6 d4 exd4 Nxd4 Nf6 Nc3 Bb4
-e4 e5 Nf3 Nc6 Nc3 Nf6 Bb5 Bb4
-e4 e5 Nf3 Nf6 Nxe5 d6 Nf3 Nxe4 d4 d5
-e4 e5 Nc3 Nf6 f4 d5 fxe5 Nxe4
-e4 e5 f4 exf4 Nf3 g5
-e4 e5 Bc4 Nf6 d3 c6 Nf3 d5
-e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6
-e4 c5 Nf3 Nc6 d4 cxd4 Nxd4 g6
-e4 c5 Nc3 Nc6 g3 g6 Bg2 Bg7
-e4 c5 c3 d5 exd5 Qxd5 d4 Nf6
-e4 e6 d4 d5 Nc3 Nf6 Bg5 Be7
-e4 e6 d4 d5 Nd2 Nf6 e5 Nfd7
-e4 e6 d4 d5 exd5 exd5 Nf3 Nf6
-e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5
-e4 c6 d4 d5 e5 c5
-e4 d5 exd5 Qxd5 Nc3 Qa5 d4 Nf6
-e4 d5 exd5 Nf6 d4 Nxd5 Nf3 g6
-e4 Nf6 e5 Nd5 d4 d6 Nf3 dxe5 Nxe5 c6
-e4 g6 d4 Bg7 Nc3 d6 f4 Nf6
-e4 d6 d4 Nf6 Nc3 g6 f4 Bg7
-d4 d5 c4 e6 Nc3 Nf6 Bg5 Be7 e3 O-O
-d4 d5 c4 c6 Nf3 Nf6 Nc3 e6 Bg5 dxc4
-d4 d5 c4 dxc4 Nf3 Nf6 e3 e6 Bxc4 c5
-d4 d5 c4 e5 dxe5 d4 Nf3 Nc6
-d4 d5 Nf3 Nf6 c4 e6
-d4 d5 Bf4 Nf6 e3 e6 Nf3 c5
-d4 Nf6 c4 g6 Nc3 Bg7 e4 d6 Nf3 O-O
-d4 Nf6 c4 e6 Nc3 Bb4 e3 O-O
-d4 Nf6 c4 e6 Nf3 b6 g3 Bb7 Bg2 Be7
-d4 Nf6 c4 c5 d5 b5
-d4 f5 g3 Nf6 Bg2 e6 Nf3 Be7
-c4 e5 Nc3 Nf6 Nf3 Nc6 g3 d5
-c4 c5 Nf3 Nf6 d4 cxd4 Nxd4 e6
-Nf3 d5 g3 Nf6 Bg2 e6 O-O Be7
-Nf3 Nf6 c4 e6 g3 d5 Bg2 Be7
-"""
+# name + mainline. used for the Book badge and the opening readout.
+OPENINGS = [
+    ("Ruy Lopez", "e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O Be7 Re1 b5 Bb3 d6 c3 O-O"),
+    ("Italian Game", "e4 e5 Nf3 Nc6 Bc4 Bc5 c3 Nf6 d3 d6"),
+    ("Italian Game: Two Knights", "e4 e5 Nf3 Nc6 Bc4 Nf6 Ng5 d5 exd5 Na5"),
+    ("Scotch Game", "e4 e5 Nf3 Nc6 d4 exd4 Nxd4 Nf6 Nc3 Bb4"),
+    ("Four Knights Game", "e4 e5 Nf3 Nc6 Nc3 Nf6 Bb5 Bb4"),
+    ("Petrov Defence", "e4 e5 Nf3 Nf6 Nxe5 d6 Nf3 Nxe4 d4 d5"),
+    ("Vienna Game", "e4 e5 Nc3 Nf6 f4 d5 fxe5 Nxe4"),
+    ("King's Gambit", "e4 e5 f4 exf4 Nf3 g5"),
+    ("Bishop's Opening", "e4 e5 Bc4 Nf6 d3 c6 Nf3 d5"),
+    ("Sicilian Najdorf", "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6"),
+    ("Sicilian Dragon", "e4 c5 Nf3 Nc6 d4 cxd4 Nxd4 g6"),
+    ("Sicilian Closed", "e4 c5 Nc3 Nc6 g3 g6 Bg2 Bg7"),
+    ("Sicilian Alapin", "e4 c5 c3 d5 exd5 Qxd5 d4 Nf6"),
+    ("French Defence", "e4 e6 d4 d5 Nc3 Nf6 Bg5 Be7"),
+    ("French Tarrasch", "e4 e6 d4 d5 Nd2 Nf6 e5 Nfd7"),
+    ("French Exchange", "e4 e6 d4 d5 exd5 exd5 Nf3 Nf6"),
+    ("Caro-Kann", "e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5"),
+    ("Caro-Kann Advance", "e4 c6 d4 d5 e5 c5"),
+    ("Scandinavian Defence", "e4 d5 exd5 Qxd5 Nc3 Qa5 d4 Nf6"),
+    ("Scandinavian: Nf6", "e4 d5 exd5 Nf6 d4 Nxd5 Nf3 g6"),
+    ("Alekhine Defence", "e4 Nf6 e5 Nd5 d4 d6 Nf3 dxe5 Nxe5 c6"),
+    ("Modern Defence", "e4 g6 d4 Bg7 Nc3 d6 f4 Nf6"),
+    ("Pirc Defence", "e4 d6 d4 Nf6 Nc3 g6 f4 Bg7"),
+    ("Queen's Gambit Declined", "d4 d5 c4 e6 Nc3 Nf6 Bg5 Be7 e3 O-O"),
+    ("Queen's Gambit Slav", "d4 d5 c4 c6 Nf3 Nf6 Nc3 e6 Bg5 dxc4"),
+    ("Queen's Gambit Accepted", "d4 d5 c4 dxc4 Nf3 Nf6 e3 e6 Bxc4 c5"),
+    ("Queen's Gambit: Central", "d4 d5 c4 e5 dxe5 d4 Nf3 Nc6"),
+    ("London System", "d4 d5 Bf4 Nf6 e3 e6 Nf3 c5"),
+    ("Colle System", "d4 d5 Nf3 Nf6 c4 e6"),
+    ("King's Indian Defence", "d4 Nf6 c4 g6 Nc3 Bg7 e4 d6 Nf3 O-O"),
+    ("Nimzo-Indian Defence", "d4 Nf6 c4 e6 Nc3 Bb4 e3 O-O"),
+    ("Queen's Indian Defence", "d4 Nf6 c4 e6 Nf3 b6 g3 Bb7 Bg2 Be7"),
+    ("Benko Gambit", "d4 Nf6 c4 c5 d5 b5"),
+    ("Dutch Defence", "d4 f5 g3 Nf6 Bg2 e6 Nf3 Be7"),
+    ("English Opening", "c4 e5 Nc3 Nf6 Nf3 Nc6 g3 d5"),
+    ("English Symmetrical", "c4 c5 Nf3 Nf6 d4 cxd4 Nxd4 e6"),
+    ("King's Indian Attack", "Nf3 d5 g3 Nf6 Bg2 e6 O-O Be7"),
+    ("Reti Opening", "Nf3 Nf6 c4 e6 g3 d5 Bg2 Be7"),
+]
 
 
 def _book_index():
-    out = set()
-    for line in BOOK_LINES.strip().splitlines():
+    moves, names = set(), {}
+    for name, line in OPENINGS:
         toks = line.split()
         for i in range(1, len(toks) + 1):
-            out.add(tuple(toks[:i]))
-    return out
+            pref = tuple(toks[:i])
+            moves.add(pref)
+            names.setdefault(pref, name)
+    return moves, names
 
 
-BOOK_MOVES = _book_index()
+BOOK_MOVES, BOOK_NAME = _book_index()
+
+
+def opening_for(sans):
+    """Longest known opening that matches, but only once it is really a line."""
+    played = tuple(sans)
+    if len(played) < 4:
+        return None
+    best = None
+    for pref, name in BOOK_NAME.items():
+        if len(pref) <= len(played) and played[:len(pref)] == pref:
+            if best is None or len(pref) > best[0]:
+                best = (len(pref), name)
+    return best[1] if best else None
 
 
 def grade_move(loss, is_best, gap, best_cp, played_cp, best_mate, sac, book, only):
@@ -638,11 +809,13 @@ class CoachApp:
     def load_settings(self):
         d = {"difficulty": 5, "theme": "green", "threats": True, "dots": True,
              "coords": True, "evalbar": True, "talk": True, "review": True,
-             "locked": False, "provider": "groq", "model": ""}
+             "locked": False, "provider": "local", "model": ""}
         try:
             d.update(json.loads((data_dir() / "settings.json").read_text()))
         except Exception:
             pass
+        if d.get("provider") not in PROVIDERS:
+            d["provider"] = "local"
         return d
 
     def save_settings(self):
@@ -699,12 +872,19 @@ class CoachApp:
         self.build_sidebar(boardarea)
         boardrow = tk.Frame(boardarea, bg=BG)
         boardrow.pack(side="left")
-        self.evalbar = tk.Canvas(boardrow, width=16, height=self.SQ * 8, bg="#0a0c11",
-                                 highlightthickness=1, highlightbackground=LINE)
-        self.evalbar.pack(side="left", padx=(0, 6))
-        self.canvas = tk.Canvas(boardrow, width=self.SQ * 8, height=self.SQ * 8,
+        self.evalbar = tk.Canvas(boardrow, width=12, height=self.SQ * 8, bg=BG,
+                                 highlightthickness=0, bd=0)
+        self.evalbar.pack(side="left", padx=(0, 8))
+        self.boardframe = tk.Canvas(boardrow, width=self.SQ * 8 + 14,
+                                    height=self.SQ * 8 + 14, bg=BG,
+                                    highlightthickness=0, bd=0)
+        self.boardframe.pack(side="left")
+        self._frame_img = ImageTk.PhotoImage(
+            rounded_patch(self.SQ * 8 + 14, self.SQ * 8 + 14, 20, "#0a0d13", LINE, 1))
+        self.boardframe.create_image(0, 0, image=self._frame_img, anchor="nw")
+        self.canvas = tk.Canvas(self.boardframe, width=self.SQ * 8, height=self.SQ * 8,
                                 highlightthickness=0, bg=THEMES[self.settings["theme"]][0])
-        self.canvas.pack(side="left")
+        self.boardframe.create_window(7, 7, window=self.canvas, anchor="nw")
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_motion)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
@@ -715,6 +895,36 @@ class CoachApp:
         self.capstrip = tk.Label(left, text="", bg=BG, fg="#8d96a8",
                                  font=("Consolas", 10), height=2)
         self.capstrip.pack(fill="x", pady=(6, 0))
+
+        # opening / gambit readout, in the empty space under the board
+        self.info = tk.Canvas(left, bg=BG, height=58, highlightthickness=0, bd=0)
+        self.info.pack(fill="x", pady=(4, 0))
+        self._info_img = None
+        self.info_item = self.info.create_text(20, 16, anchor="w", text="OPENING",
+                                               fill="#6f7a90", font=("Consolas", 7, "bold"))
+        self.opening_lbl = self.info.create_text(20, 34, anchor="w", text="—",
+                                                 fill=TEXT, font=("Segoe UI", 10, "bold"))
+        self.gambit_lbl = self.info.create_text(20, 52, anchor="w", text="",
+                                                fill="#d8a45c", font=("Consolas", 7))
+        self.acc_lbl = self.info.create_text(330, 16, anchor="w", text="ACCURACY",
+                                             fill="#6f7a90", font=("Consolas", 7, "bold"))
+        self.acc_val = self.info.create_text(330, 34, anchor="w", text="—",
+                                             fill=TEXT, font=("Segoe UI", 10, "bold"))
+
+        def paint_info(e=None):
+            w = self.info.winfo_width()
+            if w <= 2:
+                return
+            self._info_img = ImageTk.PhotoImage(
+                rounded_patch(w, 58, 16, CARD, LINE, 1))
+            self.info.coords(self.acc_lbl, w - 170, 16)
+            self.info.coords(self.acc_val, w - 170, 34)
+            self.info.delete("bg")
+            self.info.create_image(0, 0, image=self._info_img, anchor="nw", tags="bg")
+            self.info.tag_lower("bg")
+
+        self.info.bind("<Configure>", paint_info)
+        left.after_idle(paint_info)
 
         self.build_panel(right)
         self.bind_keys()
@@ -733,11 +943,10 @@ class CoachApp:
                                ("fen", "FEN", self.copy_fen),
                                ("theme", "GREEN", self.cycle_theme),
                                ("full", "FULL", self.toggle_full)):
-            b = tk.Button(bar, text=text, command=cmd, bg=CARD2, fg=TEXT,
-                          relief="flat", font=("Consolas", 7, "bold"), bd=0,
-                          cursor="hand2", pady=7,
-                          activebackground="#2d3341", activeforeground=TEXT)
-            b.pack(fill="x", pady=(0, 5))
+            b = RoundButton(bar, text=text, command=cmd, width=SIDEBAR_W,
+                            height=34, radius=13, fill=CARD2, fg=TEXT,
+                            font=("Consolas", 7, "bold"), bg=BG)
+            b.pack(fill="x", pady=(0, 6))
             self.side_btns[key] = b
 
     def _sync_side_buttons(self):
@@ -806,7 +1015,12 @@ class CoachApp:
                 b = int(170 * max(0.0, 1 - (img.size[1] - y) / (img.size[1] * 0.55)))
                 d.line([(0, y), (img.size[0], y)], fill=(10, 13, 18, b))
             img = Image.alpha_composite(img.convert("RGBA"), shade)
-            self.hero_bg = ImageTk.PhotoImage(img.convert("RGB").resize((w, h), Image.LANCZOS))
+            flat = img.convert("RGB").resize((w, h), Image.LANCZOS)
+            mask = Image.new("L", (w * 4, h * 4), 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                [0, 0, w * 4 - 1, h * 4 - 1], radius=18 * 4, fill=255)
+            flat.putalpha(mask.resize((w, h), Image.LANCZOS))
+            self.hero_bg = ImageTk.PhotoImage(flat)
             cv.create_image(0, 0, image=self.hero_bg, anchor="nw")
         except Exception:
             pass
@@ -820,13 +1034,40 @@ class CoachApp:
                        fill="#ffffff", font=("Segoe UI", 14, "bold"))
         cv.create_text(72, h - 22, text="stockfish underneath, opinions on top",
                        anchor="w", fill="#b9c2d2", font=("Segoe UI", 8))
-        self.turn_lbl = tk.Label(parent, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
-        self.turn_lbl.pack(anchor="w", pady=(0, 6), padx=(SIDEBAR_W + 8, 0))
+        line = tk.Frame(parent, bg=BG)
+        line.pack(fill="x", pady=(0, 6), padx=(SIDEBAR_W + 8, 0))
+        self.turn_lbl = tk.Label(line, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
+        self.turn_lbl.pack(side="left")
 
     def card(self, parent, **kw):
-        f = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=LINE)
-        f.pack(fill="x", pady=(0, 8), **kw)
-        return f
+        """Rounded card. Returns the inner frame, so callers pack as before."""
+        cv = tk.Canvas(parent, bg=BG, highlightthickness=0, bd=0, height=10)
+        cv.pack(fill="x", pady=(0, 8), **kw)
+        inner = tk.Frame(cv, bg=CARD)
+        holder = cv.create_window(12, 12, window=inner, anchor="nw")
+        state = {"img": None, "w": 0, "h": 0}
+
+        def redraw():
+            w = cv.winfo_width()
+            if w <= 1:
+                return
+            cv.itemconfigure(holder, width=max(10, w - 24))
+            need = inner.winfo_reqheight() + 24
+            if abs(need - state["h"]) > 1:
+                state["h"] = need
+                cv.configure(height=need)
+            if w != state["w"] or state["img"] is None:
+                state["w"] = w
+                state["img"] = ImageTk.PhotoImage(
+                    rounded_patch(w, max(24, need), 16, CARD, LINE, 1))
+                cv.delete("cardbg")
+                cv.create_image(0, 0, image=state["img"], anchor="nw", tags="cardbg")
+                cv.tag_lower("cardbg")
+
+        cv.bind("<Configure>", lambda e: redraw())
+        inner.bind("<Configure>", lambda e: redraw())
+        parent.after_idle(redraw)
+        return inner
 
     def build_panel(self, parent):
         # coach
@@ -845,8 +1086,8 @@ class CoachApp:
         row.pack(fill="x")
         tk.Label(row, text="Ray", bg=CARD, fg=TEXT,
                  font=("Segoe UI", 10, "bold")).pack(side="left")
-        self.lvl_tag = tk.Label(row, text="CASUAL", bg="#7ec96b", fg="#0d1117",
-                                font=("Consolas", 7, "bold"), padx=5, pady=1)
+        self.lvl_tag = tk.Label(row, text="CASUAL", bg=CARD, fg="#7ec96b",
+                                font=("Consolas", 7, "bold"))
         self.lvl_tag.pack(side="left", padx=6)
         self.engine_lbl = tk.Label(row, text="engine ready", bg=CARD, fg="#68718a",
                                    font=("Consolas", 7))
@@ -860,8 +1101,8 @@ class CoachApp:
         c2 = self.card(parent)
         r2 = tk.Frame(c2, bg=CARD)
         r2.pack(fill="x", padx=10, pady=9)
-        self.chip = tk.Label(r2, text="ready", bg="#2a3040", fg="#aab3c4",
-                             font=("Consolas", 8, "bold"), padx=7, pady=4, width=11)
+        self.chip = RoundChip(r2, text="ready", width=104, height=28,
+                              fill="#2a3040", fg="#aab3c4")
         self.chip.pack(side="left")
         self.rate_lbl = tk.Label(r2, text="make a move", bg=CARD, fg=MUTED,
                                  font=("Segoe UI", 9), anchor="w", justify="left",
@@ -875,34 +1116,31 @@ class CoachApp:
         for text, cmd, col_bg in (("Hint", self.hint, CARD2), ("Revert", self.undo, CARD2),
                                   ("Flip", self.flip, CARD2), ("New", self.new_game, "#7ec96b")):
             fg = "#0d1117" if col_bg == "#7ec96b" else TEXT
-            b = tk.Button(btns, text=text, command=cmd, bg=col_bg, fg=fg, relief="flat",
-                          font=("Segoe UI", 9, "bold"), activebackground=col_bg,
-                          activeforeground=fg, bd=0, cursor="hand2", pady=6)
-            b.pack(side="left", fill="x", expand=True, padx=2)
+            b = RoundButton(btns, text=text, command=cmd, width=76, height=34,
+                            radius=13, fill=col_bg, fg=fg, bg=CARD)
+            b.pack(side="left", padx=2)
 
-        self.btn_analyze = tk.Button(
-            c3, text="Analyze game", command=self.analyze_game, bg="#20252f",
-            fg="#6f7789", relief="flat", font=("Segoe UI", 9, "bold"),
-            activebackground="#2a3040", activeforeground=TEXT, bd=0,
-            cursor="arrow", pady=7, state="disabled")
+        self.btn_analyze = RoundButton(
+            c3, text="Analyze game", command=self.analyze_game, width=320,
+            height=36, radius=14, fill="#20252f", fg="#6f7789", bg=CARD,
+            stretch=True)
+        self.btn_analyze.configure(state="disabled")
         self.btn_analyze.pack(fill="x", padx=8, pady=(0, 8))
 
         # step-through review (hidden until the analysis finishes)
         self.review_bar = tk.Frame(c3, bg=CARD)
-        self.btn_prev = tk.Button(self.review_bar, text="◀", width=3,
-                                  command=lambda: self.step_review(-1),
-                                  bg=CARD2, fg=TEXT, relief="flat", bd=0,
-                                  cursor="hand2", font=("Segoe UI", 9, "bold"))
+        self.btn_prev = RoundButton(self.review_bar, text="◀", width=40, height=32,
+                                    radius=12, fill=CARD2, fg=TEXT, bg=CARD,
+                                    command=lambda: self.step_review(-1))
         self.btn_prev.pack(side="left")
-        self.btn_next = tk.Button(self.review_bar, text="▶", width=3,
-                                  command=lambda: self.step_review(1),
-                                  bg=CARD2, fg=TEXT, relief="flat", bd=0,
-                                  cursor="hand2", font=("Segoe UI", 9, "bold"))
+        self.btn_next = RoundButton(self.review_bar, text="▶", width=40, height=32,
+                                    radius=12, fill=CARD2, fg=TEXT, bg=CARD,
+                                    command=lambda: self.step_review(1))
         self.btn_next.pack(side="right")
-        self.btn_auto = tk.Button(self.review_bar, text="auto", width=5,
-                                  command=self.toggle_auto,
-                                  bg=CARD2, fg=TEXT, relief="flat", bd=0,
-                                  cursor="hand2", font=("Consolas", 8, "bold"))
+        self.btn_auto = RoundButton(self.review_bar, text="auto", width=56, height=32,
+                                    radius=12, fill=CARD2, fg=TEXT, bg=CARD,
+                                    font=("Consolas", 8, "bold"),
+                                    command=self.toggle_auto)
         self.btn_auto.pack(side="right", padx=(0, 4))
         self.review_lbl = tk.Label(self.review_bar, text="", bg=CARD, fg=TEXT,
                                    font=("Consolas", 8, "bold"))
@@ -912,12 +1150,12 @@ class CoachApp:
         c4 = self.card(parent)
         mf = tk.Frame(c4, bg="#0e1117")
         mf.pack(fill="both", expand=True, padx=7, pady=7)
-        self.moves = tk.Text(mf, height=8, bg="#0e1117", fg="#cfd6e3", bd=0,
+        self.moves = tk.Text(mf, height=6, bg="#0e1117", fg="#cfd6e3", bd=0,
                              font=("Consolas", 9), wrap="none", cursor="arrow",
                              state="disabled", highlightthickness=0)
-        sb = tk.Scrollbar(mf, command=self.moves.yview, width=8)
-        self.moves.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
+        for w in (mf, self.moves):
+            w.bind("<MouseWheel>",
+                   lambda e: self.moves.yview_scroll(int(-e.delta / 120), "units"))
         self.moves.pack(side="left", fill="both", expand=True)
         self.moves.tag_configure("num", foreground="#666f83")
         self.moves.bind("<Button-1>", self.on_move_click)
@@ -946,14 +1184,7 @@ class CoachApp:
         tk.Label(ends, text="brutal", bg=CARD, fg="#5b6478",
                  font=("Consolas", 7)).pack(side="right")
 
-        row2 = tk.Frame(s, bg=CARD)
-        row2.pack(fill="x")
-        tk.Label(row2, text="Board", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(side="left")
         self.theme_var = tk.StringVar(value=self.settings["theme"])
-        om = ttk.Combobox(row2, values=list(THEMES), textvariable=self.theme_var,
-                          width=8, state="readonly")
-        om.pack(side="right")
-        om.bind("<<ComboboxSelected>>", lambda e: self.on_theme())
 
         opts = tk.Frame(s, bg=CARD)
         opts.pack(fill="x", pady=(7, 0))
@@ -975,17 +1206,25 @@ class CoachApp:
                                 relief="flat", font=("Segoe UI", 9))
         self.chat_in.pack(side="left", fill="x", expand=True, ipady=5, padx=(2, 6))
         self.chat_in.bind("<Return>", lambda e: self.send_chat())
-        tk.Button(cf, text="Send", command=self.send_chat, bg=CARD2, fg=TEXT,
-                  relief="flat", font=("Segoe UI", 8, "bold"), bd=0,
-                  cursor="hand2", padx=10).pack(side="right")
-        tk.Button(cf, text="key…", command=self.key_dialog, bg=CARD, fg=MUTED,
-                  relief="flat", font=("Segoe UI", 8), bd=0, cursor="hand2",
-                  padx=6).pack(side="right", padx=(0, 4))
+        RoundButton(cf, text="Send", command=self.send_chat, width=62, height=30,
+                    radius=12, fill=CARD2, fg=TEXT, bg=CARD,
+                    font=("Segoe UI", 8, "bold")).pack(side="right")
+        RoundButton(cf, text="key…", command=self.key_dialog, width=48, height=30,
+                    radius=12, fill=CARD, fg=MUTED, bg=CARD,
+                    font=("Segoe UI", 8)).pack(side="right", padx=(0, 6))
 
         self.status_lbl = tk.Label(parent, text="", bg=BG, fg="#5b6478",
                                    font=("Consolas", 7))
         self.status_lbl.pack(anchor="w", pady=(2, 0))
         self.update_provider_status()
+
+    def center_dialog(self, win):
+        """Put a dialog over the middle of the main window, not a screen corner."""
+        win.update_idletasks()
+        w, h = win.winfo_width(), win.winfo_height()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - w) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - h) // 2)
+        win.geometry(f"+{x}+{y}")
 
     def bind_keys(self):
         self.root.bind("<KeyPress>", self.on_key)
@@ -1193,11 +1432,25 @@ class CoachApp:
         h = self.SQ * 8
         if not self.settings["evalbar"]:
             return
+        cache = getattr(self, "_eval_cache", None)
+        if cache is None:
+            cache = self._eval_cache = {}
+        if "track" not in cache:
+            cache["track"] = ImageTk.PhotoImage(
+                rounded_patch(12, h, 6, "#0a0d13", LINE, 1))
+        self.evalbar.create_image(0, 0, image=cache["track"], anchor="nw")
         frac = max(-1.0, min(1.0, self.last_eval / 700))
-        top = (1 - (frac + 1) / 2) * h
-        self.evalbar.create_rectangle(0, top, 16, h, fill="#dfe4ec", width=0)
-        self.evalbar.create_text(8, h - 10, text=fmt_eval(self.last_eval), anchor="s",
-                                 fill="#8b93a5", font=("Consolas", 6, "bold"))
+        top = int((1 - (frac + 1) / 2) * h)
+        fill_h = h - top
+        if fill_h > 6:
+            key = ("fill", fill_h)
+            if key not in cache:
+                cache[key] = ImageTk.PhotoImage(
+                    rounded_patch(10, fill_h, 5, "#e6ebf4"))
+            self.evalbar.create_image(1, top, image=cache[key], anchor="nw")
+        self.evalbar.create_text(6, h - 7, text=fmt_eval(self.last_eval),
+                                 anchor="s", fill="#8b93a5",
+                                 font=("Consolas", 6, "bold"))
 
     def update_captures(self):
         start = {chess.PAWN: 8, chess.KNIGHT: 2, chess.BISHOP: 2,
@@ -1309,6 +1562,7 @@ class CoachApp:
                           cursor="hand2", padx=4, pady=4,
                           command=lambda p=pt: (choice.update(v=p), win.destroy()))
             b.pack(side="left", padx=4)
+        self.center_dialog(win)
         win.wait_window()
         if choice["v"] is None:
             return None
@@ -1393,7 +1647,7 @@ class CoachApp:
         self.render_moves()
         self.render()
         if self.settings["talk"]:
-            self.say(random.choice(LINES.get(cls, LINES["good"])))
+            self.say(self.comment(rec))
 
         if self.board.is_game_over():
             self.busy = False
@@ -1478,6 +1732,44 @@ class CoachApp:
                     done()
 
         cv.after(8, step)
+
+    GOOD = ("best", "brilliant", "great", "book", "excellent", "good", "forced")
+
+    def best_san(self, rec):
+        best = rec.get("best")
+        if not best:
+            return None
+        try:
+            board = chess.Board(rec["fen"])
+            return board.san(chess.Move.from_uci(best))
+        except Exception:
+            return None
+
+    def comment(self, rec):
+        """One concrete sentence, like a coach pointing at the board."""
+        cls = rec["cls"] or "good"
+        label = LABEL.get(cls, "?")
+        bits = [f"{rec['san']} — {label}."]
+        if cls in ("inaccuracy", "mistake", "miss", "blunder") and rec["loss"]:
+            bits.append(f"that's {min(rec['loss'], 1500)/100:.2f} pawns gone.")
+        better = self.best_san(rec)
+        if better and cls not in self.GOOD:
+            bits.append(f"{better} was the move.")
+        elif cls == "book":
+            name = opening_for([r["san"] for r in self.stack])
+            bits.append(f"still theory{': ' + name if name else ''}.")
+        elif cls == "brilliant":
+            bits.append("a real sacrifice, and it holds.")
+        elif cls == "great":
+            bits.append("only move that keeps it together.")
+        elif cls == "miss":
+            bits.append("a win was on the board.")
+        if random.random() < 0.35:
+            bits.append(random.choice(["i'm not a master, but that's clear.",
+                                       "chess is easy when you see it afterwards.",
+                                       "write that one down.",
+                                       "stockfish agrees with me, for once."]))
+        return " ".join(bits)
 
     def set_rating(self, cls, loss):
         self.chip.configure(text=LABEL.get(cls, "?"), bg=COL.get(cls, "#2a3040"),
@@ -1672,8 +1964,12 @@ class CoachApp:
 
     def review_line(self, rec):
         mine = rec["color"] == self.player_color
-        if rec["cls"] == "opp":
-            return f"Ray played {rec['san']}. no grade for the other guy."
+        if rec["cls"] in ("opp", None):
+            return (f"ray played {rec['san']}. grading it in a moment."
+                    if not mine else f"{rec['san']} — not graded yet.")
+        if rec["cls"] is not None:
+            base = self.comment(rec)
+            return base if mine else "ray: " + base
         note = {"brilliant": "a sacrifice that works.",
                 "great": "the only move that held.",
                 "best": "engine's pick.",
@@ -1841,11 +2137,12 @@ class CoachApp:
             self.hint_armed = False
             self.hint_cache = None
             return
-        self.say("gimme a sec…")
+        self.say("thinking properly this time — a couple of seconds…")
+        fen = self.board.fen()
 
         def work():
-            cp, _, best = self.engine.analyze(self.board.fen(), 18)
-            self.ui(lambda: self._show_hint(best))
+            best = self.engine.best_move(fen, 2500)
+            self.ui(lambda: self._show_hint(best, fen))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1856,7 +2153,9 @@ class CoachApp:
         self.canvas.create_line(x1, y1, x2, y2, fill="#7ec96b", width=9,
                                 arrow="last", arrowshape=(16, 20, 7), tags="hint")
 
-    def _show_hint(self, best):
+    def _show_hint(self, best, fen=None):
+        if fen is not None and fen != self.board.fen():
+            return                     # board moved on while we were thinking
         if not best:
             self.say("i've got nothing. worrying for both of us.")
             return
@@ -1884,7 +2183,19 @@ class CoachApp:
     def say(self, text):
         self.say_lbl.configure(text=text)
 
+    def update_opening(self):
+        sans = [r["san"] for r in self.stack]
+        name = opening_for(sans)
+        self.info.itemconfigure(self.opening_lbl, text=name or "—")
+        gambit = bool(name and "Gambit" in name)
+        self.info.itemconfigure(self.gambit_lbl,
+                                text="gambit accepted" if gambit else
+                                     ("no gambit" if name else ""))
+        acc = self.accuracy()
+        self.info.itemconfigure(self.acc_val, text=f"{acc}%" if acc is not None else "—")
+
     def render_moves(self):
+        self.update_opening()
         t = self.moves
         t.configure(state="normal")
         t.delete("1.0", "end")
@@ -1947,7 +2258,9 @@ class CoachApp:
     # ---------------- chat ----------------
     def update_provider_status(self):
         prov = self.settings["provider"]
-        cfg = PROVIDERS.get(prov, PROVIDERS["groq"])
+        if prov not in PROVIDERS:
+            prov = "local"
+        cfg = PROVIDERS.get(prov, PROVIDERS["local"])
         if not vault():
             self.status_lbl.configure(text="secrets-mcp not found — chat uses canned lines")
             return
@@ -1965,10 +2278,113 @@ class CoachApp:
             self.hint()
             return
         self.say("…")
-        threading.Thread(target=self._chat_work, args=(text,), daemon=True).start()
+        last = self.stack[-1] if self.stack else None
+        mine = next((r for r in reversed(self.stack)
+                     if r["color"] == self.player_color), None)
+        snap = {"fen": self.board.fen(),
+                "sans": [r["san"] for r in self.stack],
+                "eval": self.last_eval,
+                "last_san": last["san"] if last else None,
+                "last_cls": last["cls"] if last else None,
+                "last_loss": last["loss"] if last else 0,
+                "last_best": last.get("best") if last else None,
+                "mine_san": mine["san"] if mine else None,
+                "mine_cls": mine["cls"] if mine else None,
+                "mine_loss": mine["loss"] if mine else 0,
+                "mine_best": mine.get("best") if mine else None,
+                "acc": self.accuracy(),
+                "difficulty": self.settings["difficulty"],
+                "turn": "you" if self.board.turn == self.player_color else "ray"}
+        threading.Thread(target=self._chat_work, args=(text, snap), daemon=True).start()
 
-    def _chat_work(self, text):
+    # ---------------- built-in coach (no key, no network) ----------------
+    def local_brain(self, text, snap):
+        """Ray without an API: reads the position and answers from it."""
+        t = text.lower().strip()
+        board = chess.Board(snap["fen"])
+        opening = opening_for(snap["sans"])
+        ev = fmt_eval(snap["eval"])
+
+        def san_of(uci):
+            try:
+                return board.san(chess.Move.from_uci(uci))
+            except Exception:
+                return uci
+
+        if re.search(r"\b(hint|best|play|move|what should|suggest)\b", t):
+            best = self.engine.best_move(snap["fen"], 2200)
+            if not best:
+                return "no legal move worth suggesting. that's a first."
+            mv = chess.Move.from_uci(best)
+            piece = board.piece_at(mv.from_square)
+            name = chess.piece_name(piece.piece_type) if piece else "piece"
+            why = ("it just wins material." if board.is_capture(mv)
+                   else "it keeps the position honest.")
+            return (f"{san_of(best)} — move the {name} from "
+                    f"{chess.square_name(mv.from_square)}. {why} eval is {ev}.")
+
+        if re.search(r"\b(threat\w*|danger\w*|attack\w*|hanging|safe)\b", t):
+            enemy = not self.player_color
+            probe = board.copy(stack=False)
+            probe.turn = enemy
+            worst, target = None, None
+            for sq in chess.SQUARES:
+                p = probe.piece_at(sq)
+                if not p or p.color != enemy:
+                    continue
+                for tgt in probe.attacks(sq):
+                    v = board.piece_at(tgt)
+                    if v and v.color == self.player_color:
+                        if worst is None or PIECE_VALUE.get(v.piece_type, 0) > worst:
+                            worst, target = PIECE_VALUE.get(v.piece_type, 0), tgt
+            if target is None:
+                return "nothing is hanging right now. that's the good news."
+            victim = board.piece_at(target)
+            return (f"your {chess.piece_name(victim.piece_type)} on "
+                    f"{chess.square_name(target)} is attacked. deal with it or lose it.")
+
+        if re.search(r"\b(why|bad|blunder|mistake|wrong|miss)\b", t) and snap.get("mine_san"):
+            cls = snap["mine_cls"] or "move"
+            better = ""
+            if snap.get("mine_best"):
+                try:
+                    better = f" {snap['mine_best'] and san_of(snap['mine_best'])} was the move."
+                except Exception:
+                    better = ""
+            cost = (f" it cost {min(snap['mine_loss'], 1500) / 100:.2f} pawns."
+                    if snap["mine_loss"] else "")
+            return f"your {snap['mine_san']} graded {LABEL.get(cls, cls)}.{cost}{better}"
+
+        if re.search(r"\b(opening|gambit|theory|line)\b", t):
+            if opening:
+                tag = " that's a gambit." if "Gambit" in opening else ""
+                return f"you're in the {opening}.{tag} eval {ev}."
+            return f"no theory line yet — free-form chess. eval {ev}."
+
+        if re.search(r"\b(eval|score|winning|losing|better|who)\b", t):
+            side = "you're" if (snap["eval"] > 0) == (self.player_color == chess.WHITE) else "ray is"
+            return f"eval {ev}, so {side} on top. roughly."
+
+        acc = snap["acc"]
+        review = ""
+        if snap["last_san"]:
+            review = f" last one graded {LABEL.get(snap['last_cls'] or 'move', '?')}."
+        tail = f" you're on {acc}% tonight." if acc is not None else ""
+        opener = random.choice([
+            "still here. position says", "short version:", "let's keep it simple:"])
+        return f"{opener} eval {ev}.{review}{tail}"
+
+    def _chat_work(self, text, snap):
         prov = self.settings["provider"]
+        if prov not in PROVIDERS:
+            prov = "local"
+        if prov == "local":
+            try:
+                out = self.local_brain(text, snap)
+            except Exception as exc:
+                out = f"my brain fell over: {exc}"
+            self.ui(lambda: self.say(out))
+            return
         model = self.settings.get("model") or PROVIDERS[prov]["model"]
         ctx = (f"FEN: {self.board.fen()}\n"
                f"Player is {'White' if self.player_color else 'Black'}. "
@@ -2051,10 +2467,11 @@ class CoachApp:
             self.update_provider_status()
             win.after(500, win.destroy)
 
-        tk.Button(win, text="Save", command=save, bg="#7ec96b", fg="#0d1117",
-                  relief="flat", font=("Segoe UI", 9, "bold"), bd=0,
-                  cursor="hand2", padx=16, pady=6).grid(
-            row=7, column=0, columnspan=2, pady=14)
+        btn = RoundButton(win, text="Save", command=save, width=110, height=34,
+                          radius=14, fill="#7ec96b", fg="#0d1117", bg=CARD,
+                          font=("Segoe UI", 9, "bold"))
+        btn.grid(row=7, column=0, columnspan=2, pady=14)
+        self.center_dialog(win)
         win.wait_window()
         self.update_provider_status()
 

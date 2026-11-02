@@ -30,16 +30,22 @@ else is touched.
 
 ## What it does
 
+- **Opening readout**: names the line you are in and flags a gambit,
+  under the board next to your accuracy
 - **Instant move rating**: Brilliant / Great / Best / Excellent / Good / Book /
   Inaccuracy / Mistake / Miss / Blunder, the pawns it cost you, and a colored
   chip. The loss is measured at one root: the engine's score for its best move
   minus its score for yours, so tempo is never counted as a mistake
 - **Threat arrows**: real legal attack generation, not a guess. Enemy pieces
   that can take something of yours get a red arrow, worst victim first
+- **Smooth rounded UI**: cards, buttons, chips, board frame and banner are
+  drawn with PIL at 4x and downsampled, so the edges are antialiased
 - **Draw your own arrows**: right-click drag from square to square. They stay
   put through moves, undo, flips and theme changes. Right-drag the same arrow
   again to remove it, or right-click a square without dragging to clear all
-- **Hint**: first press points at the piece, second press names the move
+- **Hint**: first press points at the piece, second press names the move.
+  The search runs for up to 2.5s at full strength, so it is the engine's move,
+  not a guess
 - **Revert**: the button, or click any move in the list to rewind there
 - **Drag or click** to move, legal-move dots, last-move and check highlights
 - **Post-game review, step by step**: an **Analyze game** button lights up when
@@ -66,11 +72,13 @@ Save. It comes back as a fingerprint (`…M98A`), never as a value.
 
 | provider | default model | key needed |
 |---|---|---|
-| Groq | `openai/gpt-oss-20b` | yes |
+| Ray (built-in) | rule-based coach | no, works offline |
 | OpenAI | `gpt-4o-mini` | yes |
 | OpenRouter | `openai/gpt-oss-20b` | yes |
 | Ollama | `llama3.1` | no, local |
 
+The built-in brain is the default. It reads the real position (eval, threats,
+best move, opening, your last grade) and answers without any key or network.
 Any OpenAI-compatible endpoint works. Free Groq keys:
 <https://console.groq.com/keys>
 
