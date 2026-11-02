@@ -1218,7 +1218,7 @@ class CoachApp:
         inner = tk.Frame(c, bg=CARD)
         inner.pack(fill="x", padx=10, pady=10)
         try:
-            av = Image.open(res("assets", "icon-256.png")).resize((40, 40), Image.LANCZOS)
+            av = Image.open(res("assets", "ray.png")).resize((40, 40), Image.LANCZOS)
             self.avatar = ImageTk.PhotoImage(av)
             tk.Label(inner, image=self.avatar, bg=CARD).pack(side="left", padx=(0, 9))
         except Exception:
