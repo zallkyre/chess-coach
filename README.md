@@ -42,7 +42,8 @@ else is touched.
   drawn with PIL at 4x and downsampled, so the edges are antialiased
 - **Draw your own arrows**: right-click drag from square to square. They stay
   put through moves, undo, flips and theme changes. Right-drag the same arrow
-  again to remove it, or right-click a square without dragging to clear all
+  again to remove it, shift + right-click to clear them all. A knight's arrow
+  bends at the corner instead of cutting across the board
 - **Hint**: first press points at the piece, second press names the move.
   The search runs for up to 2.5s at full strength, so it is the engine's move,
   not a guess

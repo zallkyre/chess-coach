@@ -1457,7 +1457,10 @@ class CoachApp:
         if dst is None:
             return                      # dragged off the board: cancel
         if dst == src:
-            self.user_arrows = []       # right click without a drag clears them
+            if e.state & 0x0001:        # shift + right click clears everything
+                self.user_arrows = []
+            self.render()
+            return
         else:
             pair = (src, dst)
             if pair in self.user_arrows:
@@ -1466,14 +1469,37 @@ class CoachApp:
                 self.user_arrows.append(pair)
         self.render()
 
+    def _draw_arrow(self, a, b, color, width, tags, shape=(15, 19, 6)):
+        """Straight arrow, except a knight's move: that one turns a corner,
+        two squares one way and one the other, like you would draw it."""
+        f1, r1 = chess.square_file(a), chess.square_rank(a)
+        f2, r2 = chess.square_file(b), chess.square_rank(b)
+        df, dr = f2 - f1, r2 - r1
+        x1, y1 = self.center(a)
+        x2, y2 = self.center(b)
+        if abs(df) == 2 and abs(dr) == 1:
+            bx, by = self.center(chess.square(f1 + 2 * (1 if df > 0 else -1), r1))
+            self.canvas.create_line(x1, y1, bx, by, fill=color, width=width,
+                                    capstyle="round", joinstyle="round", tags=tags)
+            self.canvas.create_line(bx, by, x2, y2, fill=color, width=width,
+                                    arrow="last", arrowshape=shape,
+                                    capstyle="round", tags=tags)
+        elif abs(df) == 1 and abs(dr) == 2:
+            bx, by = self.center(chess.square(f1, r1 + 2 * (1 if dr > 0 else -1)))
+            self.canvas.create_line(x1, y1, bx, by, fill=color, width=width,
+                                    capstyle="round", joinstyle="round", tags=tags)
+            self.canvas.create_line(bx, by, x2, y2, fill=color, width=width,
+                                    arrow="last", arrowshape=shape,
+                                    capstyle="round", tags=tags)
+        else:
+            self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width,
+                                    arrow="last", arrowshape=shape,
+                                    capstyle="round", tags=tags)
+
     def draw_user_arrows(self):
         self.canvas.delete("arrow")
         for a, b in self.user_arrows:
-            x1, y1 = self.center(a)
-            x2, y2 = self.center(b)
-            self.canvas.create_line(x1, y1, x2, y2, fill="#e8a13a", width=7,
-                                    arrow="last", arrowshape=(15, 19, 6),
-                                    tags="arrow")
+            self._draw_arrow(a, b, "#e8a13a", 7, "arrow")
 
     def draw_threats(self):
         cv = self.canvas
@@ -1647,12 +1673,13 @@ class CoachApp:
         fen_before = self.board.fen()
         only = self.board.legal_moves.count() == 1
         san = self.board.san(move)
+        ep = self.board.is_en_passant(move)
         self.board.push(move)
         self.last_move = move
         self.selected = None
         rec = {"move": move, "san": san, "fen": fen_before,
                "cls": None, "loss": 0, "only": only,
-               "color": not self.board.turn}
+               "color": not self.board.turn, "ep": ep}
         self.stack.append(rec)
         self.render_moves()
         self.render()
@@ -1722,7 +1749,10 @@ class CoachApp:
         self.render_moves()
         self.render()
         if self.settings["talk"]:
-            self.say(self.comment(rec))
+            line = self.comment(rec)
+            if rec.get("ep"):
+                line = "en passant — that pawn was only passing through. " + line
+            self.say(line)
 
         if self.board.is_game_over():
             self.busy = False
@@ -2088,10 +2118,8 @@ class CoachApp:
             move = chess.Move.from_uci(best)
         except Exception:
             return
-        x1, y1 = self.center(move.from_square)
-        x2, y2 = self.center(move.to_square)
-        self.canvas.create_line(x1, y1, x2, y2, fill="#7ec96b", width=7,
-                                arrow="last", arrowshape=(14, 18, 6), tags="rev")
+        self._draw_arrow(move.from_square, move.to_square, "#7ec96b", 7, "rev",
+                         (14, 18, 6))
         x, y = self.sq_xy(move.from_square)
         self.canvas.create_rectangle(x + 2, y + 2, x + self.SQ - 2, y + self.SQ - 2,
                                      outline="#7ec96b", width=2, tags="rev")
