@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 from collections import OrderedDict
 from pathlib import Path
@@ -34,6 +35,7 @@ REVIEW_DEPTH = 16
 PREFETCH_DEPTH = 16            # background pass deepens every grade afterwards
 SLIDE_MS = 170
 SIDEBAR_W = 46                 # width of the button strip left of the board
+EVAL_W = 34                    # eval bar: wide enough to read a score in
 CACHE_MAX = 4096               # FEN entries kept in the transposition cache
 GRADE_CACHE_MAX = 1024
 
@@ -578,6 +580,7 @@ class RoundButton(tk.Canvas):
         self._enabled = True
         self._bhovering = False
         self._img = None
+        self._icon = None
         self._stretch = stretch
         self.bind("<Enter>", lambda e: self._set_hover(True))
         self.bind("<Leave>", lambda e: self._set_hover(False))
@@ -611,9 +614,13 @@ class RoundButton(tk.Canvas):
         self._img = ImageTk.PhotoImage(
             rounded_patch(self._bw, self._bh, self._br, fill))
         self.create_image(0, 0, image=self._img, anchor="nw")
-        self.create_text(self._bw / 2, self._bh / 2 + 1, text=self._text,
-                         fill=self._fg if self._enabled else "#6f7789",
-                         font=self._font)
+        if self._icon is not None:
+            # a badge icon replaces the text, centred in the same chip
+            self.create_image(self._bw / 2, self._bh / 2 + 1, image=self._icon)
+        else:
+            self.create_text(self._bw / 2, self._bh / 2 + 1, text=self._text,
+                             fill=self._fg if self._enabled else "#6f7789",
+                             font=self._font)
 
     # tk.Button-ish surface, so the rest of the app can stay as it was
     def configure(self, **kw):
@@ -621,7 +628,13 @@ class RoundButton(tk.Canvas):
         for key, attr in (("text", "_text"), ("fg", "_fg"), ("bg", "_fill")):
             if key in kw:
                 setattr(self, attr, kw.pop(key))
+                if key == "text":
+                    self._icon = None      # words and a badge never share the chip
                 dirty = True
+        if "image" in kw:
+            # a PhotoImage badge drawn instead of the text; None clears it
+            self._icon = kw.pop("image") or None
+            dirty = True
         if "state" in kw:
             self._enabled = kw.pop("state") != "disabled"
             self.configure(cursor="hand2" if self._enabled else "arrow")
@@ -862,6 +875,11 @@ COL = {"brilliant": "#26c2a3", "great": "#5b9bd5", "best": "#81b64c",
 GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "+",
          "good": "✓", "book": "📖", "inaccuracy": "?!", "mistake": "?",
          "miss": "✕", "blunder": "??", "forced": "="}
+# what the move list prints: plain ASCII that renders at a readable size in a
+# monospace font, instead of emoji that land tiny and misaligned
+MARK = {"brilliant": "!!", "great": "!", "best": "", "excellent": "",
+        "good": "", "book": "", "inaccuracy": "?!", "mistake": "?",
+        "miss": "×", "blunder": "??", "forced": "="}
 
 THEMES = {
     "green": ("#eeeed2", "#769656"),
@@ -1123,6 +1141,10 @@ class CoachApp:
         self.ui_queue: queue.Queue = queue.Queue()
 
         self.settings = self.load_settings()
+        if not self.settings.get("theme_v2"):
+            self.settings["theme"] = "green"
+            self.settings["theme_v2"] = True
+            self.save_settings()
         exe = engine_path()
         if exe is None:
             raise RuntimeError(
@@ -1177,7 +1199,9 @@ class CoachApp:
                 try:
                     fn()
                 except Exception:
-                    pass
+                    # never silently drop a queued update: a swallowed error
+                    # here used to freeze the board mid-game with no clue why
+                    traceback.print_exc()
         finally:
             self.root.after(25, self._pump)
 
@@ -1268,12 +1292,8 @@ class CoachApp:
             if fen != self.board.fen() or self.busy or self.reviewing:
                 return
             self.last_eval = value
-            if uci and len(uci) >= 4:
-                try:
-                    self.live_arrow = (chess.parse_square(uci[:2]),
-                                       chess.parse_square(uci[2:4]))
-                except ValueError:
-                    self.live_arrow = None
+            self._eval_depth = depth
+            self.live_arrow = None
             self.engine_lbl.configure(
                 text=f"depth {depth}" + (f" · {nps // 1000}k nps" if nps else ""),
                 fg="#68718a")
@@ -1309,7 +1329,7 @@ class CoachApp:
         self.build_sidebar(boardarea)
         boardrow = tk.Frame(boardarea, bg=BG)
         boardrow.pack(side="left")
-        self.evalbar = tk.Canvas(boardrow, width=12, height=self.SQ * 8, bg=BG,
+        self.evalbar = tk.Canvas(boardrow, width=EVAL_W, height=self.SQ * 8, bg=BG,
                                  highlightthickness=0, bd=0)
         self.evalbar.pack(side="left", padx=(0, 8))
         self.boardframe = tk.Canvas(boardrow, width=self.SQ * 8 + 14,
@@ -1449,10 +1469,12 @@ class CoachApp:
         self._sync_side_buttons()
 
     def build_header(self, parent):
-        w, h = self.SQ * 8 + 22, 168
+        # line the hero up with the board itself: sidebar + eval bar + gutters
+        board_x = SIDEBAR_W + EVAL_W + 8
+        w, h = self.SQ * 8 + 14, 168
         cv = tk.Canvas(parent, width=w, height=h, highlightthickness=1,
                        highlightbackground=LINE, bg=CARD, bd=0)
-        cv.pack(pady=(0, 10), anchor="w", padx=(SIDEBAR_W + 8, 0))
+        cv.pack(pady=(0, 10), anchor="w", padx=(board_x, 0))
         try:
             img = Image.open(res("assets", "banner-full.jpg")).convert("RGB")
             img = ImageOps.fit(img, (w * 2, h * 2), method=Image.LANCZOS)
@@ -1474,6 +1496,19 @@ class CoachApp:
             cv.create_image(0, 0, image=self.hero_bg, anchor="nw")
         except Exception:
             pass
+        # a dark plate behind the words, fading into the photo on the right
+        try:
+            pw = 440
+            plate = Image.new("RGBA", (pw, h), (9, 12, 17, 0))
+            px = plate.load()
+            for x in range(pw):
+                al = int(232 * max(0.0, 1 - (x / pw) ** 1.5))
+                for y in range(h):
+                    px[x, y] = (9, 12, 17, al)
+            self.hero_plate = ImageTk.PhotoImage(plate)
+            cv.create_image(0, 0, image=self.hero_plate, anchor="nw")
+        except Exception:
+            pass
         try:
             icon = Image.open(res("assets", "icon-256.png")).resize((46, 46), Image.LANCZOS)
             self.hero_icon = ImageTk.PhotoImage(icon)
@@ -1485,7 +1520,7 @@ class CoachApp:
         cv.create_text(72, h - 22, text="stockfish underneath, opinions on top",
                        anchor="w", fill="#b9c2d2", font=("Segoe UI", 8))
         line = tk.Frame(parent, bg=BG)
-        line.pack(fill="x", pady=(0, 6), padx=(SIDEBAR_W + 8, 0))
+        line.pack(fill="x", pady=(0, 6), padx=(board_x, 0))
         self.turn_lbl = tk.Label(line, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
         self.turn_lbl.pack(side="left")
 
@@ -1542,10 +1577,33 @@ class CoachApp:
         self.engine_lbl = tk.Label(row, text="engine ready", bg=CARD, fg="#68718a",
                                    font=("Consolas", 7))
         self.engine_lbl.pack(side="right")
-        self.say_lbl = tk.Label(col, text="starting stockfish…", bg="#0e1117", fg="#dce2ec",
-                                font=("Segoe UI", 9), wraplength=250, justify="left",
-                                anchor="w", padx=9, pady=8, height=4)
-        self.say_lbl.pack(fill="x", pady=(5, 0))
+        # Ray's chat: a real transcript, not one label that overwrites itself
+        self.chat = tk.Text(col, height=7, bg="#0e1117", fg="#dce2ec", bd=0,
+                            relief="flat", highlightthickness=0, wrap="word",
+                            font=("Segoe UI", 9), padx=10, pady=8,
+                            cursor="arrow", state="disabled", spacing3=6,
+                            insertwidth=0, selectbackground="#38414f")
+        self.chat.pack(fill="x", pady=(6, 0))
+        self.chat.tag_configure("who", foreground="#7ec96b",
+                                font=("Segoe UI", 8, "bold"))
+        self.chat.tag_configure("me", foreground="#8d96a8",
+                                font=("Segoe UI", 8, "bold"))
+        self.chat.tag_configure("body", foreground="#dce2ec")
+        self.chat.tag_configure("dim", foreground="#8d96a8")
+
+        # the box that talks back sits right under the words, not in another card
+        crow = tk.Frame(c, bg=CARD)
+        crow.pack(fill="x", padx=10, pady=(0, 10))
+        self.chat_in = tk.Entry(crow, bg="#0e1117", fg=TEXT, insertbackground=TEXT,
+                                relief="flat", font=("Segoe UI", 9))
+        self.chat_in.pack(side="left", fill="x", expand=True, ipady=5, padx=(0, 6))
+        self.chat_in.bind("<Return>", lambda e: self.send_chat())
+        RoundButton(crow, text="Send", command=self.send_chat, width=62, height=30,
+                    radius=12, fill=CARD2, fg=TEXT, bg=CARD,
+                    font=("Segoe UI", 8, "bold")).pack(side="right")
+        RoundButton(crow, text="key…", command=self.key_dialog, width=48, height=30,
+                    radius=12, fill=CARD, fg=MUTED, bg=CARD,
+                    font=("Segoe UI", 8)).pack(side="right", padx=(0, 6))
 
         # rating
         c2 = self.card(parent)
@@ -1601,8 +1659,9 @@ class CoachApp:
         mf = tk.Frame(c4, bg="#0e1117")
         mf.pack(fill="both", expand=True, padx=7, pady=7)
         self.moves = tk.Text(mf, height=6, bg="#0e1117", fg="#cfd6e3", bd=0,
-                             font=("Consolas", 9), wrap="none", cursor="arrow",
-                             state="disabled", highlightthickness=0)
+                             font=("Consolas", 10), wrap="none", cursor="arrow",
+                             state="disabled", highlightthickness=0, spacing1=1,
+                             spacing3=2)
         for w in (mf, self.moves):
             w.bind("<MouseWheel>",
                    lambda e: self.moves.yview_scroll(int(-e.delta / 120), "units"))
@@ -1637,32 +1696,20 @@ class CoachApp:
         self.theme_var = tk.StringVar(value=self.settings["theme"])
 
         opts = tk.Frame(s, bg=CARD)
-        opts.pack(fill="x", pady=(7, 0))
+        opts.pack(fill="x", pady=(8, 0))
         self.chk = {}
+        self.toggle_lbl = {}
         for key, label in (("threats", "Threats"), ("dots", "Dots"),
                            ("coords", "Coords"), ("evalbar", "Eval bar")):
-            v = tk.BooleanVar(value=self.settings[key])
-            self.chk[key] = v
-            tk.Checkbutton(opts, text=label, variable=v, bg=CARD, fg="#c3cad8",
-                           selectcolor="#0e1117", activebackground=CARD,
-                           activeforeground=TEXT, font=("Segoe UI", 8), bd=0,
-                           command=lambda k=key: self.on_toggle(k)).pack(side="left")
+            self.chk[key] = tk.BooleanVar(value=bool(self.settings[key]))
+            lab = tk.Label(opts, text=label, bg=CARD2, fg="#8d96a8",
+                           font=("Segoe UI", 8), padx=8, pady=3, cursor="hand2")
+            lab.pack(side="left", padx=(0, 4))
+            lab.bind("<Button-1>", lambda e, k=key: self._toggle_click(k))
+            self.toggle_lbl[key] = (lab, label)
+        self.paint_toggles()
 
-        # chat
-        c6 = self.card(parent)
-        cf = tk.Frame(c6, bg=CARD)
-        cf.pack(fill="x", padx=8, pady=8)
-        self.chat_in = tk.Entry(cf, bg="#0e1117", fg=TEXT, insertbackground=TEXT,
-                                relief="flat", font=("Segoe UI", 9))
-        self.chat_in.pack(side="left", fill="x", expand=True, ipady=5, padx=(2, 6))
-        self.chat_in.bind("<Return>", lambda e: self.send_chat())
-        RoundButton(cf, text="Send", command=self.send_chat, width=62, height=30,
-                    radius=12, fill=CARD2, fg=TEXT, bg=CARD,
-                    font=("Segoe UI", 8, "bold")).pack(side="right")
-        RoundButton(cf, text="key…", command=self.key_dialog, width=48, height=30,
-                    radius=12, fill=CARD, fg=MUTED, bg=CARD,
-                    font=("Segoe UI", 8)).pack(side="right", padx=(0, 6))
-
+        # chat lives in the coach card above; nothing to build down here
         self.status_lbl = tk.Label(parent, text="", bg=BG, fg="#5b6478",
                                    font=("Consolas", 7))
         self.status_lbl.pack(anchor="w", pady=(2, 0))
@@ -1759,14 +1806,14 @@ class CoachApp:
                 cv.create_rectangle(x0, y0, x0 + self.SQ, y0 + self.SQ,
                                     fill=fill, width=0)
                 if coords and row == 7:
-                    cv.create_text(x0 + self.SQ - 4, y0 + self.SQ - 4,
+                    cv.create_text(x0 + self.SQ - 6, y0 + self.SQ - 5,
                                    text=chess.FILE_NAMES[file], anchor="se",
-                                   fill="#465a32" if fill == light else "#e8eeda",
-                                   font=("Consolas", 7, "bold"))
+                                   fill="#3f5530" if fill == light else "#eef3e2",
+                                   font=("Consolas", 9, "bold"))
                 if coords and col == 0:
-                    cv.create_text(x0 + 4, y0 + 3, text=str(rank + 1), anchor="nw",
-                                   fill="#465a32" if fill == light else "#e8eeda",
-                                   font=("Consolas", 7, "bold"))
+                    cv.create_text(x0 + 5, y0 + 4, text=str(rank + 1), anchor="nw",
+                                   fill="#3f5530" if fill == light else "#eef3e2",
+                                   font=("Consolas", 9, "bold"))
 
         if self.last_move:
             for sq in (self.last_move.from_square, self.last_move.to_square):
@@ -1811,13 +1858,16 @@ class CoachApp:
                             tags=("pc", f"sq{sq}"))
 
         self.draw_threats()
-        if self.live_arrow and not self.hint_armed and not self.game_over:
-            a, b = self.live_arrow
-            x1, y1 = self.center(a)
-            x2, y2 = self.center(b)
-            cv.create_line(x1, y1, x2, y2, fill="#6fa8dc", width=6,
-                           arrow="last", arrowshape=(14, 17, 6), tags="live")
         self.draw_user_arrows()
+        badge = getattr(self, "board_badge", None)
+        if badge:
+            sq, cls = badge
+            pm = self._badge_photo(cls)
+            if pm:
+                # top-right corner, inside the square the move landed on
+                x, y = self.sq_xy(sq)
+                cv.create_image(x + self.SQ - 3, y + 3, image=pm,
+                                anchor="ne", tags="bbadge")
         self.update_evalbar()
         self.update_captures()
         self.update_turn()
@@ -1865,32 +1915,62 @@ class CoachApp:
                 self.user_arrows.append(pair)
         self.render()
 
-    def _draw_arrow(self, a, b, color, width, tags, shape=(15, 19, 6)):
-        """Straight arrow, except a knight's move: that one turns a corner,
-        two squares one way and one the other, like you would draw it."""
+    def _arrow_photo(self, a, b, color, width):
+        """An arrow drawn by PIL at 4x and scaled down. Tk canvas lines have no
+        antialiasing at all, which is why they were reading as staircases."""
+        key = ("arrow", a, b, color, width, self.orientation)
+        cache = getattr(self, "_arrow_cache", None)
+        if cache is None:
+            cache = self._arrow_cache = OrderedDict()
+        hit = cache.get(key)
+        if hit is not None:
+            cache.move_to_end(key)
+            return hit
+        S, ss = self.SQ, 4
+        img = Image.new("RGBA", (S * 8 * ss, S * 8 * ss), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+
+        def ctr(sq):
+            x, y = self.center(sq)
+            return x * ss, y * ss
+
         f1, r1 = chess.square_file(a), chess.square_rank(a)
         f2, r2 = chess.square_file(b), chess.square_rank(b)
         df, dr = f2 - f1, r2 - r1
-        x1, y1 = self.center(a)
-        x2, y2 = self.center(b)
-        if abs(df) == 2 and abs(dr) == 1:
-            bx, by = self.center(chess.square(f1 + 2 * (1 if df > 0 else -1), r1))
-            self.canvas.create_line(x1, y1, bx, by, fill=color, width=width,
-                                    capstyle="round", joinstyle="round", tags=tags)
-            self.canvas.create_line(bx, by, x2, y2, fill=color, width=width,
-                                    arrow="last", arrowshape=shape,
-                                    capstyle="round", tags=tags)
+        pts = [ctr(a)]
+        if abs(df) == 2 and abs(dr) == 1:       # a knight turns a corner
+            pts.append(ctr(chess.square(f1 + (2 if df > 0 else -2), r1)))
         elif abs(df) == 1 and abs(dr) == 2:
-            bx, by = self.center(chess.square(f1, r1 + 2 * (1 if dr > 0 else -1)))
-            self.canvas.create_line(x1, y1, bx, by, fill=color, width=width,
-                                    capstyle="round", joinstyle="round", tags=tags)
-            self.canvas.create_line(bx, by, x2, y2, fill=color, width=width,
-                                    arrow="last", arrowshape=shape,
-                                    capstyle="round", tags=tags)
-        else:
-            self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width,
-                                    arrow="last", arrowshape=shape,
-                                    capstyle="round", tags=tags)
+            pts.append(ctr(chess.square(f1, r1 + (2 if dr > 0 else -2))))
+        pts.append(ctr(b))
+
+        # stop short of the centre so the piece being pointed at stays visible
+        (x1, y1), (x2, y2) = pts[-2], pts[-1]
+        dx, dy = x2 - x1, y2 - y1
+        n = max(1.0, (dx * dx + dy * dy) ** 0.5)
+        ux, uy = dx / n, dy / n
+        tip = (x2 - ux * S * 0.28 * ss, y2 - uy * S * 0.28 * ss)
+        pts[-1] = tip
+
+        head, half = S * 0.34 * ss, S * 0.19 * ss
+        base = (tip[0] - ux * head, tip[1] - uy * head)
+        px, py = -uy, ux
+        d.line(pts, fill=color, width=max(2, int(width * ss)), joint="curve")
+        d.polygon([tip, (base[0] + px * half, base[1] + py * half),
+                   (base[0] - px * half, base[1] - py * half)], fill=color)
+        r = max(1, int(width * ss / 2))
+        d.ellipse((pts[0][0] - r, pts[0][1] - r,
+                   pts[0][0] + r, pts[0][1] + r), fill=color)
+        photo = ImageTk.PhotoImage(img.resize((S * 8, S * 8), Image.LANCZOS))
+        cache[key] = photo
+        while len(cache) > 48:
+            cache.popitem(last=False)
+        return photo
+
+    def _draw_arrow(self, a, b, color, width, tags, shape=None):
+        self.canvas.create_image(0, 0, anchor="nw",
+                                 image=self._arrow_photo(a, b, color, width),
+                                 tags=tags)
 
     def draw_user_arrows(self):
         self.canvas.delete("arrow")
@@ -1916,14 +1996,14 @@ class CoachApp:
                     victims.append((sq, m))
         victims.sort(key=lambda v: self.board.piece_at(v[1]).piece_type, reverse=True)
         for a, b in victims[:8]:
-            x1, y1 = self.center(a)
-            x2, y2 = self.center(b)
-            cv.create_line(x1, y1, x2, y2, fill="#e06464", width=5,
-                           arrow="last", arrowshape=(13, 15, 6), tags="threat")
+            self._draw_arrow(a, b, "#e06464", 6, "threat")
 
     def update_evalbar(self):
-        self.evalbar.delete("all")
-        h = self.SQ * 8
+        """White's share grows up from the bottom, with the score and the depth
+        printed on the bar instead of leaving it as a blank white strip."""
+        ev = self.evalbar
+        ev.delete("all")
+        w, h = EVAL_W, self.SQ * 8
         if not self.settings["evalbar"]:
             return
         cache = getattr(self, "_eval_cache", None)
@@ -1931,20 +2011,32 @@ class CoachApp:
             cache = self._eval_cache = {}
         if "track" not in cache:
             cache["track"] = ImageTk.PhotoImage(
-                rounded_patch(12, h, 6, "#0a0d13", LINE, 1))
-        self.evalbar.create_image(0, 0, image=cache["track"], anchor="nw")
+                rounded_patch(w, h, 9, "#0f1218", LINE, 1))
+        ev.create_image(0, 0, image=cache["track"], anchor="nw")
+
         frac = max(-1.0, min(1.0, self.last_eval / 700))
-        top = int((1 - (frac + 1) / 2) * h)
-        fill_h = h - top
-        if fill_h > 6:
-            key = ("fill", fill_h)
+        white_h = int((frac + 1) / 2 * h)
+        white_h = max(0, min(h, white_h))
+        if white_h > 4:
+            key = ("white", white_h)
             if key not in cache:
                 cache[key] = ImageTk.PhotoImage(
-                    rounded_patch(10, fill_h, 5, "#e6ebf4"))
-            self.evalbar.create_image(1, top, image=cache[key], anchor="nw")
-        self.evalbar.create_text(6, h - 7, text=fmt_eval(self.last_eval),
-                                 anchor="s", fill="#8b93a5",
-                                 font=("Consolas", 6, "bold"))
+                    rounded_patch(w - 4, white_h, 7, "#eef2f8"))
+            ev.create_image(2, h - white_h, image=cache[key], anchor="nw")
+        ev.create_line(3, h // 2, w - 3, h // 2, fill="#6b7484")
+
+        def readable(y):
+            return "#12161e" if y > h - white_h else "#e9e6e2"
+
+        ev.create_text(w / 2, 8, text=fmt_eval(self.last_eval),
+                       fill=readable(8), font=("Consolas", 9, "bold"),
+                       angle=90, anchor="n")
+        depth = int(getattr(self, "_eval_depth", 0) or 0)
+        if depth:
+            y = h - 8
+            ev.create_text(w / 2, y, text=f"d{depth}",
+                           fill=readable(y), font=("Consolas", 7),
+                           angle=90, anchor="s")
 
     def update_captures(self):
         start = {chess.PAWN: 8, chess.KNIGHT: 2, chess.BISHOP: 2,
@@ -2066,6 +2158,7 @@ class CoachApp:
     def try_move(self, move):
         self.hint_cache = None
         self.hint_armed = False
+        self.board_badge = None
         self.live_arrow = None
         self._live_depth = 0
         fen_before = self.board.fen()
@@ -2164,6 +2257,7 @@ class CoachApp:
         if rec.get("best"):
             self.best_cache.setdefault(rec["fen"], {"uci": rec["best"]})
         self.set_rating(cls, loss)
+        self.board_badge = (move.to_square, cls)
         self.render_moves()
         self.render()
         if self.settings["talk"]:
@@ -2177,19 +2271,25 @@ class CoachApp:
             self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
             self.end_game()
             return
-        self.schedule_prefetch()
+        # the reply goes first: a prefetch queued ahead of it just holds the
+        # engine lock and makes Ray look like he hung. after_reply schedules
+        # the prefetch once the answer is on the board.
         threading.Thread(target=self._engine_reply,
                          args=(epoch, self.board.fen()), daemon=True).start()
 
     def _engine_reply(self, epoch, fen):
-        level = self.settings["difficulty"]
-        move = book_move(fen) if level >= 3 else None   # 0 ms of theory
-        if not move:
-            move = self.engine.play(fen, level, depth_for(level), budget_ms=1400)
-        if not move or chess.Move.from_uci(move) not in chess.Board(fen).legal_moves:
-            legal = list(chess.Board(fen).legal_moves)
-            move = random.choice(legal).uci() if legal else None
-        time.sleep(0.30)          # let the player's own move land before the answer
+        try:
+            level = self.settings["difficulty"]
+            move = book_move(fen) if level >= 3 else None   # 0 ms of theory
+            if not move:
+                move = self.engine.play(fen, level, depth_for(level), budget_ms=1400)
+            if not move or chess.Move.from_uci(move) not in chess.Board(fen).legal_moves:
+                legal = list(chess.Board(fen).legal_moves)
+                move = random.choice(legal).uci() if legal else None
+            time.sleep(0.30)      # let the player's own move land before the answer
+        except Exception:
+            traceback.print_exc()
+            move = None           # after_reply clears busy and unlocks the board
         self.ui(lambda: self.after_reply(move, epoch))
 
     def after_reply(self, uci, epoch):
@@ -2213,10 +2313,11 @@ class CoachApp:
         self.stack.append({"move": move, "san": san, "fen": fen_before,
                            "cls": "opp", "loss": 0, "only": False,
                            "color": not self.board.turn, "ep": ep})
+        self.live_arrow = None
+        self.board_badge = None      # clear before painting, not after
+        self._live_depth = 0
         self.render_moves()
         self.render()
-        self.live_arrow = None
-        self._live_depth = 0
 
         def settle():
             self.busy = False
@@ -2320,9 +2421,42 @@ class CoachApp:
         }
         return RAY.comment(ctx)
 
+    def _badge_photo(self, cls):
+        key = ("boardbadge", cls, self.SQ)
+        cache = getattr(self, "_img_cache", None)
+        if cache is None:
+            cache = self._img_cache = {}
+        if key not in cache:
+            try:
+                size = max(18, int(self.SQ * 0.50))
+                path = res("assets", "badges", f"{cls}.png")
+                im = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
+                cache[key] = ImageTk.PhotoImage(im)
+            except Exception:
+                cache[key] = None
+        return cache[key]
+
+    def _chip_icon(self, cls):
+        key = ("chipicon", cls)
+        cache = getattr(self, "_img_cache", None)
+        if cache is None:
+            cache = self._img_cache = {}
+        if key not in cache:
+            try:
+                path = res("assets", "badges", f"{cls}.png")
+                im = Image.open(path).convert("RGBA").resize((26, 26), Image.LANCZOS)
+                cache[key] = ImageTk.PhotoImage(im)
+            except Exception:
+                cache[key] = None
+        return cache[key]
+
     def set_rating(self, cls, loss):
-        self.chip.configure(text=GLYPH.get(cls, "?"), bg=COL.get(cls, "#3b3936"),
-                            fg="#ffffff")
+        icon = self._chip_icon(cls) if cls in GLYPH else None
+        if icon is not None:
+            self.chip.configure(image=icon, text="", bg=COL.get(cls, "#3b3936"))
+        else:
+            self.chip.configure(text=GLYPH.get(cls, "?"), bg=COL.get(cls, "#3b3936"),
+                                fg="#ffffff")
         notes = {"brilliant": "sacrifice, and it works",
                  "great": "only move that held",
                  "best": "engine's top choice",
@@ -2630,6 +2764,7 @@ class CoachApp:
         self.reviewing = False
         self.busy = False
         self.hint_cache = None
+        self.board_badge = None
         self.player_color = chess.WHITE
         self.orientation = chess.WHITE
         self.render_moves()
@@ -2644,6 +2779,8 @@ class CoachApp:
             self.pre_eval = cp
             self.ui(lambda: self._set_eval(cp))
 
+        if os.environ.get("CHESSCOACH_DEBUG_BADGE"):
+            self.board_badge = (chess.D4, os.environ["CHESSCOACH_DEBUG_BADGE"])
         threading.Thread(target=boot, daemon=True).start()
         self.best_cache.clear()
         self.engine.new_game()
@@ -2775,8 +2912,23 @@ class CoachApp:
             self.review_arrow(self.stack[self.review_ply])
 
     # ---------------- panel updates ----------------
-    def say(self, text):
-        self.say_lbl.configure(text=text)
+    def say(self, text, who="ray"):
+        """Append to Ray's transcript and scroll to it. Older messages stay
+        readable instead of being overwritten by the next one."""
+        t = getattr(self, "chat", None)
+        if t is None:
+            return
+        t.configure(state="normal")
+        if t.get("1.0", "end").strip():
+            t.insert("end", "\n")
+        t.insert("end", "Ray   " if who == "ray" else "You   ",
+                 ("who",) if who == "ray" else ("me",))
+        t.insert("end", text + "\n", ("body",) if who != "dim" else ("dim",))
+        # keep the buffer small: a long game would otherwise grow forever
+        if int(t.index("end-1c").split(".")[0]) > 240:
+            t.delete("1.0", "40.0")
+        t.see("end")
+        t.configure(state="disabled")
 
     def update_opening(self):
         sans = [r["san"] for r in self.stack]
@@ -2799,18 +2951,19 @@ class CoachApp:
             t.insert("end", "no moves yet\n", ("num",))
         n = 0
         for i, rec in enumerate(self.stack):
+            san = rec["san"]
+            cls = rec["cls"]
+            mark = MARK.get(cls, "") if cls and cls != "opp" else ""
             if rec["color"] == chess.WHITE:
                 n += 1
                 t.insert("end", f"{n:>2}. ", ("num",))
-            elif i == 0 or self.stack[i - 1]["color"] == chess.WHITE:
-                t.insert("end", "    ")
-            cls = rec["cls"]
-            tag = f"m{i}"
-            t.insert("end", rec["san"], (tag,))
-            if cls and cls != "opp":
-                t.insert("end", GLYPH.get(cls, ""), (tag, cls))
-            t.insert("end", "  ")
-            if rec["color"] == chess.BLACK:
+                t.insert("end", san + mark, (f"m{i}", cls or "opp"))
+                # pad the white cell so black always starts in the same column
+                t.insert("end", " " * max(1, 9 - len(san + mark)))
+                if i == len(self.stack) - 1:
+                    t.insert("end", "\n")
+            else:
+                t.insert("end", san + mark, (f"m{i}", cls or "opp"))
                 t.insert("end", "\n")
         for k, colr in COL.items():
             t.tag_configure(k, foreground=colr)
@@ -2871,9 +3024,10 @@ class CoachApp:
             return
         self.chat_in.delete(0, "end")
         if re.match(r"^(hint|help|\?+)$", text, re.I):
+            self.say(text, who="you")
             self.hint()
             return
-        self.say("…")
+        self.say(text, who="you")
         last = self.stack[-1] if self.stack else None
         mine = next((r for r in reversed(self.stack)
                      if r["color"] == self.player_color), None)
@@ -3289,7 +3443,22 @@ class CoachApp:
     def on_toggle(self, key):
         self.settings[key] = bool(self.chk[key].get())
         self.save_settings()
+        self.paint_toggles()
         self.render()
+
+    def _toggle_click(self, key):
+        v = self.chk[key]
+        v.set(not v.get())
+        self.on_toggle(key)
+
+    def paint_toggles(self):
+        """Green pill with a filled dot when on, grey with a hollow one when off,
+        so the state is obvious without reading a tiny checkbox."""
+        for key, (lab, label) in getattr(self, "toggle_lbl", {}).items():
+            on = bool(self.chk[key].get())
+            lab.configure(text=("● " if on else "○ ") + label,
+                          bg="#7ec96b" if on else CARD2,
+                          fg="#0d1117" if on else "#8d96a8")
 
     def on_close(self):
         try:
