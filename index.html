@@ -9,38 +9,34 @@
 <meta name="theme-color" content="#1b2231">
 <style>
   :root{
-    --bg:#101319;
-    --card:#1a1e27;
-    --card2:#232833;
-    --line:#2d3341;
-    --text:#e8ebf1;
-    --muted:#98a1b3;
-    --sq-light:#e9edd6;
-    --sq-dark:#6f9250;
-    --sel:#f6e96b;
-    --accent:#7ec96b;
-    --best:#6fbf5b; --excellent:#41a899; --good:#8bbf6a;
-    --inacc:#dfbe57; --mistake:#df9455; --blunder:#dd5a5a; --forced:#8a93a6;
+    --bg:#312e2b;
+    --card:#262421;
+    --card2:#34322f;
+    --line:#3d3b38;
+    --text:#e9e6e2;
+    --muted:#a09c96;
+    --sq-light:#eeeed2;
+    --sq-dark:#769656;
+    --sel:rgba(255,255,51,.42);
+    --accent:#81b64c;
+    --best:#81b64c; --excellent:#95b776; --good:#a3b98a;
+    --inacc:#f7c045; --mistake:#e58f2a; --blunder:#ca3431; --forced:#8b8985;
   }
   *{box-sizing:border-box}
   body{
     margin:0; color:var(--text); font:14px/1.55 "Segoe UI",system-ui,-apple-system,sans-serif;
-    background:radial-gradient(1100px 650px at 12% -12%,#1d2432 0,transparent 60%),
-               radial-gradient(900px 600px at 108% 112%,#1a2a21 0,transparent 58%), var(--bg);
+    background:var(--bg);
     -webkit-font-smoothing:antialiased;
   }
   .wrap{max-width:1200px;margin:0 auto;padding:14px 20px 48px}
   header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 
   .hero{
-    position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--line);
-    margin-bottom:14px;box-shadow:0 14px 40px rgba(0,0,0,.35);
+    position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--line);
+    margin-bottom:12px;background:var(--card);
   }
-  .hero-bg{position:absolute;inset:0;background:url(assets/banner.jpg) center/cover no-repeat;transform:scale(1.02)}
-  .hero:after{
-    content:"";position:absolute;inset:0;
-    background:linear-gradient(90deg,rgba(14,17,23,.96) 0%,rgba(14,17,23,.86) 42%,rgba(14,17,23,.45) 78%,rgba(14,17,23,.25) 100%);
-  }
+  .hero-bg{display:none}
+  .hero:after{display:none}
   .hero-in{position:relative;z-index:2;display:flex;align-items:center;gap:13px;padding:15px 17px}
   .hero-icon{width:46px;height:46px;border-radius:11px;box-shadow:0 6px 18px rgba(0,0,0,.5);display:block}
   .hero-txt h1{margin:0;font-size:16px;letter-spacing:.16em;text-transform:uppercase;color:#fff}
@@ -79,17 +75,17 @@
   .sq{position:relative;display:flex;align-items:center;justify-content:center;cursor:default}
   .sq.light{background:var(--sq-light)}
   .sq.dark{background:var(--sq-dark)}
-  .sq.last{box-shadow:inset 0 0 0 999px rgba(246,233,107,.20)}
-  .sq.sel{box-shadow:inset 0 0 0 999px rgba(246,233,107,.44)}
+  .sq.last{box-shadow:inset 0 0 0 999px rgba(186,202,68,.41)}
+  .sq.sel{box-shadow:inset 0 0 0 999px rgba(255,255,51,.42)}
   .sq.hover{box-shadow:inset 0 0 0 999px rgba(255,255,255,.22)}
   .sq.chk{background:radial-gradient(circle,rgba(221,90,90,.95) 14%,transparent 70%) var(--sq-light)}
   .sq.dark.chk{background:radial-gradient(circle,rgba(221,90,90,.95) 14%,transparent 70%) var(--sq-dark)}
 
   .piece{width:94%;height:94%;pointer-events:none;position:relative;z-index:3;will-change:transform}
-  .piece svg{width:100%;height:100%;display:block;filter:drop-shadow(0 2px 2px rgba(0,0,0,.35))}
+  .piece svg{width:100%;height:100%;display:block}
   .piece.drag{z-index:30;pointer-events:none;transform:scale(1.12);filter:drop-shadow(0 8px 12px rgba(0,0,0,.5))}
 
-  .dot{position:absolute;width:28%;height:28%;border-radius:50%;background:rgba(18,24,18,.30);z-index:2}
+  .dot{position:absolute;width:30%;height:30%;border-radius:50%;background:rgba(20,20,20,.22);z-index:2}
   .dot.cap{width:100%;height:100%;border-radius:0;background:transparent;
            box-shadow:inset 0 0 0 5px rgba(18,24,18,.30)}
   .coord{position:absolute;font:700 9px/1 ui-monospace,monospace;pointer-events:none}
@@ -98,7 +94,7 @@
   .coord.file{bottom:2px;right:3px}
   .coord.rank{top:2px;left:3px}
 
-  #arrows{position:absolute;inset:0;z-index:6;pointer-events:none}
+  #arrows{position:absolute;inset:0;z-index:2;pointer-events:none}
   .badge{
     position:absolute;z-index:8;padding:2px 6px;border-radius:5px;
     font:800 10px/1.5 ui-monospace,monospace;text-transform:uppercase;white-space:nowrap;
@@ -119,8 +115,7 @@
 
   /* right panel */
   .panel{flex:1 1 330px;max-width:380px;min-width:290px;display:flex;flex-direction:column;gap:10px}
-  .card{background:linear-gradient(180deg,rgba(35,40,51,.92),rgba(26,30,39,.92));
-        border:1px solid var(--line);border-radius:13px;padding:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
   .coach{display:flex;gap:11px;align-items:flex-start}
   .avatar{width:46px;height:46px;flex:0 0 46px;border-radius:50%;overflow:hidden;border:1px solid #3a4459}
   .whorow{display:flex;align-items:center;gap:7px;margin-bottom:4px}
@@ -144,22 +139,24 @@
   .progress i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
 
   .btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}
-  .btn{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px;border-radius:9px;
+  .btn{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px;border-radius:6px;
        border:1px solid var(--line);background:var(--card2);color:var(--text);
-       font:600 12.5px/1 inherit;cursor:pointer;transition:.13s}
+       font:700 12.5px/1 inherit;cursor:pointer;transition:.13s}
   .btn:hover:not(:disabled){background:#2c3242;border-color:#3f4a60}
   .btn:disabled{opacity:.38;cursor:not-allowed}
-  .btn.primary{background:var(--accent);color:#0d1117;border-color:transparent;grid-column:1/-1}
-  .btn.primary:hover{background:#8ed67a}
+  .btn.primary{background:var(--accent);color:#fff;border-color:transparent;grid-column:1/-1;box-shadow:0 2px 0 #5d8636}
+  .btn.primary:hover{background:#8fc45a}
 
-  .moves{height:150px;overflow-y:auto;background:#0e1117;border:1px solid var(--line);
-         border-radius:9px;font:12.3px/1.72 ui-monospace,monospace;padding:2px 0}
+  .moves{height:168px;overflow-y:auto;background:#21201d;border:1px solid var(--line);
+         border-radius:6px;font:600 13px/1.85 "Segoe UI",system-ui,sans-serif;padding:2px 0}
   .mv{display:grid;grid-template-columns:28px 1fr 1fr;padding:0 7px}
   .mv:nth-child(odd){background:rgba(255,255,255,.02)}
-  .mv .n{color:#666f83}
-  .mv .m{cursor:pointer;border-radius:4px;padding:0 4px;display:flex;align-items:center;gap:5px;color:#cfd6e3}
-  .mv .m:hover{background:#1c2231}
+  .mv .n{color:#7e7a74;font-weight:400;font-size:12px}
+  .mv .m{cursor:pointer;border-radius:4px;padding:0 5px;display:flex;align-items:center;gap:4px;color:#e9e6e2}
+  .mv .m:hover{background:#34322f}
+  .mv .m.cur{background:#3f3d3a}
   .mv .g{font-size:9px;font-weight:800}
+  .fig{font-size:15px;line-height:1;color:#f0ece6}
   .g.best{color:var(--best)} .g.excellent{color:var(--excellent)} .g.good{color:var(--good)}
   .g.inaccuracy{color:var(--inacc)} .g.mistake{color:var(--mistake)} .g.blunder{color:var(--blunder)}
   .g.forced{color:var(--forced)}
@@ -234,10 +231,10 @@
   .pnote{font:11px/1.4 -apple-system,system-ui,sans-serif;color:#68718a}
 
   /* board themes */
-  .board.theme-green{--sq-light:#e9edd6;--sq-dark:#6f9250}
-  .board.theme-blue{--sq-light:#dee3ed;--sq-dark:#4a6fa5}
-  .board.theme-walnut{--sq-light:#e8d3b5;--sq-dark:#9b6a43}
-  .board.theme-slate{--sq-light:#c9cfd8;--sq-dark:#4a5262}
+  .board.theme-green{--sq-light:#eeeed2;--sq-dark:#769656}
+  .board.theme-blue{--sq-light:#dee3ed;--sq-dark:#4b7399}
+  .board.theme-walnut{--sq-light:#f0d9b5;--sq-dark:#b58863}
+  .board.theme-slate{--sq-light:#d5d8dc;--sq-dark:#5b6777}
   .board.hide-coords .coord{display:none}
 
   .capstrip{
@@ -258,17 +255,87 @@
     .left{width:min(92vw,570px)}
     .tag{display:none}
   }
+
+  /* ---- liquid glass: translucent panels over a soft green ambient ---- */
+  body{
+    background:
+      radial-gradient(900px 620px at 18% -8%, rgba(118,150,86,.16), transparent 62%),
+      radial-gradient(800px 560px at 100% 106%, rgba(70,110,90,.14), transparent 60%),
+      #1e211d !important;
+  }
+  .card,.turnbar,.hero,.rate,.boardwrap,.panel .card{
+    background:rgba(36,41,35,.58) !important;
+    -webkit-backdrop-filter:blur(20px) saturate(1.35);
+    backdrop-filter:blur(20px) saturate(1.35);
+    border:1px solid rgba(255,255,255,.10) !important;
+    border-radius:18px !important;
+    box-shadow:0 16px 40px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.10) !important;
+  }
+  .hero{border-radius:20px !important}
+  .btn{border-radius:14px !important;background:rgba(255,255,255,.09) !important;
+       border:1px solid rgba(255,255,255,.12) !important}
+  .btn:hover:not(:disabled){background:rgba(255,255,255,.16) !important}
+  .btn.primary{background:linear-gradient(180deg,#8ec95a,#6fa83d) !important;
+               border-color:rgba(255,255,255,.18) !important;color:#10250c !important}
+  .bubble,.rate,.moves{background:rgba(12,16,12,.42) !important;
+                       border:1px solid rgba(255,255,255,.08) !important;border-radius:14px !important}
+  .board{box-shadow:0 24px 60px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.10) !important;
+         border-radius:8px !important}
+  .piece.ghost{position:fixed;pointer-events:none;z-index:99;will-change:transform;
+               filter:drop-shadow(0 8px 10px rgba(0,0,0,.45))}
+
+  /* rating badge: bottom-left of the circle sits on the destination square's
+     top-right corner, so it straddles the four squares like chess.com */
+  .badge{
+    position:absolute;right:-23px;top:-23px;width:31px;height:31px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font:800 12px/1 ui-monospace,monospace;letter-spacing:0;color:#fff;
+    border:2px solid rgba(0,0,0,.42);z-index:9;white-space:nowrap;padding:0;
+    box-shadow:0 3px 9px rgba(0,0,0,.45),inset 0 -2px 6px rgba(0,0,0,.25);
+    animation:pop .16s ease-out;
+  }
+  .sq.hint{box-shadow:inset 0 0 0 4px #81b64c}
+  .chip{width:32px;height:32px;padding:0;border-radius:50%;display:inline-flex;
+        align-items:center;justify-content:center;font:800 11px/1 ui-monospace,monospace;
+        color:#fff;border:2px solid rgba(0,0,0,.38);
+        box-shadow:inset 0 -3px 8px rgba(0,0,0,.28),0 3px 8px rgba(0,0,0,.35)}
+
+  /* mobile: real blur is too expensive in a WebView; use tinted glass instead */
+  @media (max-width: 930px){
+    .card,.turnbar,.hero,.rate,.boardwrap,.panel .card{
+      -webkit-backdrop-filter:none !important; backdrop-filter:none !important;
+      background:rgba(34,39,33,.90) !important;
+      box-shadow:0 8px 22px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.08) !important;
+    }
+    .board{contain:layout paint}
+    .moves .m{transition:none}
+  }
+
+  /* premove: red on the two squares, chess.com style */
+  .sq.pre{box-shadow:inset 0 0 0 999px rgba(214,64,52,.45)}
+
+/* badge icons: white vector glyphs on the chess.com coloured disc */
+.badge svg{width:66%;height:66%;display:block;fill:#fff;stroke:none}
+.badge.book svg{fill:none;stroke:#fff;stroke-width:6;stroke-linejoin:round}
+
+  /* badge art: the actual icon files, cropped to a disc */
+  .badge{background:none !important;border:none !important;box-shadow:none !important;
+         width:34px;height:34px;border-radius:50%;overflow:hidden;padding:0;
+         right:-26px;top:-26px}
+  .badge img{width:100%;height:100%;display:block}
+  .chip{background:transparent !important;border:none !important;
+        box-shadow:none !important;width:34px;height:34px;overflow:hidden;padding:0}
+  .chip img{width:100%;height:100%;display:block}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header class="hero">
-    <div class="hero-bg"></div>
     <div class="hero-in">
-      <img class="hero-icon" src="assets/icon.png" alt="">
+      <img class="hero-icon" src="assets/icon-256.png" alt="">
       <div class="hero-txt">
-        <h1>Coach Mode</h1>
-        <p>chess with Ray — stockfish underneath, opinions on top</p>
+        <h1>Chess Coach</h1>
+        <p>play · learn · Ray</p>
       </div>
     </div>
   </header>
@@ -289,6 +356,7 @@
           <div class="board theme-green" id="board"></div>
           <svg id="arrows" viewBox="0 0 800 800" preserveAspectRatio="none">
             <g id="threatG"></g>
+            <g id="liveG"></g>
             <g id="hintG"></g>
           </svg>
           <div class="promo" id="promo"><div class="box" id="promoBox"></div></div>
@@ -369,21 +437,6 @@
             <button class="theme-dot" data-theme="slate" style="--a:#c9cfd8;--b:#4a5262"></button>
           </div>
 
-          <div class="brain">
-            <div class="brainhead">
-              <span>Coach brain</span>
-              <span class="kstat" id="keyStat">checking…</span>
-            </div>
-            <div class="prow">
-              <select id="prov"></select>
-              <input id="modelIn" placeholder="model" spellcheck="false">
-            </div>
-            <div class="prow">
-              <input id="importKey" type="password" placeholder="paste API key → stored in vault" autocomplete="off">
-              <button class="btn sm" id="importBtn">Save</button>
-            </div>
-            <div class="pnote" id="provNote"></div>
-          </div>
         </details>
       </div>
 
@@ -400,6 +453,8 @@
 </div>
 
 <script src="vendor/chess.js"></script>
+<script src="vendor/engine.js"></script>
+<script src="vendor/ray.js"></script>
 <script>
 /* =========================================================
    Coach Mode v2
@@ -413,19 +468,19 @@ const NAME  = { p:'pawn', n:'knight', b:'bishop', r:'rook', q:'queen', k:'king' 
 
 /* simple, flat piece silhouettes — no font dependency */
 const SHAPES = {
-  p:'<circle cx="22.5" cy="13.5" r="6.2"/><path d="M17.8 19.5h9.4l3.3 13H14.5z"/><rect x="10" y="32.2" width="25" height="5.2" rx="2.6"/>',
-  r:'<path d="M11.5 10.5h5.2v4.2h4.1v-4.2h5.4v4.2h4.1v-4.2h5.2v10.2H11.5z"/><path d="M15.6 20.7h13.8l2.1 11.6H13.5z"/><rect x="10" y="32.2" width="25" height="5.2" rx="2.6"/>',
-  n:'<path d="M15 32.4c0-6.8 2.6-11.4 7.6-14l-3.2-3.3 1.9-4.4 4.6 2.4c4.9 2.4 7.6 6.9 7.6 12.4v6.9z"/><rect x="10" y="32.2" width="25" height="5.2" rx="2.6"/>',
-  b:'<path d="M22.5 7.4c4.2 4.5 6.4 7.7 6.4 10.8a6.4 6.4 0 1 1-12.8 0c0-3.1 2.2-6.3 6.4-10.8z"/><rect x="15.8" y="24.6" width="13.4" height="4.4" rx="2.2"/><path d="M15.6 29h13.8l2.1 3.4H13.5z"/><rect x="10" y="32.4" width="25" height="5" rx="2.5"/>',
-  q:'<path d="M11.2 19.4l3.4-9.1 4.9 6.4L22.5 8l3 8.7 4.9-6.4 3.4 9.1z"/><path d="M13.6 19.4h17.8l3 13.1H10.6z"/><rect x="9.8" y="32.4" width="25.4" height="5" rx="2.5"/>',
-  k:'<path d="M20 4.6h5v4.4h4.4v5H25v4.4h-5v-4.4h-4.4v-5H20z"/><path d="M14.2 18.6h16.6l3.1 14H11.1z"/><rect x="9.8" y="32.4" width="25.4" height="5" rx="2.5"/>'
+  p:'<circle cx="50" cy="29" r="13"/><path d="M39 42h22c5 6 5 12 0 17H39c-5-5-5-11 0-17z"/><path d="M37 59h26l5 14H32z"/><rect x="27" y="73" width="46" height="11" rx="5.5"/>',
+  r:'<path d="M25 24h11v8h9v-8h10v8h9v-8h11v19H25z"/><path d="M33 43h34l-4 26H37z"/><path d="M29 69h42l4 12H25z"/><rect x="21" y="81" width="58" height="11" rx="5.5"/>',
+  n:'<path d="M31 84c0-15 6-26 18-33l-8-7 4-10 10 5c13 6 21 18 21 31v14z"/><path d="M45 44c4-2 8-2 12 0" stroke-width="2.4"/><circle cx="66" cy="38" r="2.6" fill="#00000066" stroke="none"/>',
+  b:'<path d="M50 13c9 9 13 16 13 23a13 13 0 1 1-26 0c0-7 4-14 13-23z"/><path d="M50 19v17" stroke-width="3"/><rect x="36" y="53" width="28" height="7" rx="3.5"/><path d="M34 60h32l-3 13H37z"/><path d="M30 73h40l4 11H26z"/>',
+  q:'<circle cx="24" cy="30" r="5"/><circle cx="37" cy="21" r="5"/><circle cx="50" cy="17" r="5"/><circle cx="63" cy="21" r="5"/><circle cx="76" cy="30" r="5"/><path d="M24 34l9 22h34l9-22-15 12-11-19-11 19z"/><path d="M33 56h34l-3 14H36z"/><path d="M27 70h46l5 14H22z"/>',
+  k:'<path d="M45 11h10v8h8v10h-8v8H45v-8h-8V19h8z"/><path d="M33 37h34l4 21H29z"/><path d="M31 58h38l-4 15H35z"/><path d="M26 73h48l5 12H21z"/>'
 };
 
 function pieceSvg(type, color){
-  const fill = color === 'w' ? '#f7f9fc' : '#2a3040';
-  const stroke = color === 'w' ? '#20262f' : '#0b0e13';
-  return `<svg viewBox="0 0 45 45" xmlns="http://www.w3.org/2000/svg">
-    <g fill="${fill}" stroke="${stroke}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round">
+  const fill = color === 'w' ? '#fbfbfb' : '#3b3936';
+  const stroke = color === 'w' ? '#4c4a47' : '#141312';
+  return `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <g fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round">
       ${SHAPES[type]}
     </g></svg>`;
 }
@@ -449,8 +504,11 @@ let reviewing = false;
 let cancelReview = false;
 let autoTimer = null;
 let dragging = null;
+let premove = null;
 
-const T = { move:220, grade:10, gradeCap:4000, hint:12, hintCap:6000, review:11, reviewCap:2500 };
+/* Wall-clock budgets. A fixed depth 14 can take seconds on the WASM build;
+   a movetime search always answers on time. */
+const T = { move:220, gradeMs:220, hintMs:700, reviewMs:300 };
 const NOISE = 25;   // centipawns of search noise we don't count against you
 
 function difficulty(){ const v = parseInt(document.getElementById('level').value, 10); return isNaN(v) ? 5 : v; }function diffName(v){ return v <= 3 ? 'beginner' : v <= 7 ? 'casual' : v <= 11 ? 'club' : v <= 15 ? 'strong' : 'ruthless'; }
@@ -463,6 +521,14 @@ const SETTINGS = Object.assign({
   eval: true, talk: true, review: true, confirm: false, theme: 'green'
 }, (() => { try { return JSON.parse(localStorage.getItem('ray_settings') || '{}'); } catch (e) { return {}; } })());
 
+// this build is green-first: migrate the old stored board theme once
+try {
+  if (!localStorage.getItem('cc_theme_v3')) {
+    SETTINGS.theme = 'green';
+    localStorage.setItem('cc_theme_v3', '1');
+  }
+} catch (e) {}
+
 function saveSettings(){
   try { localStorage.setItem('ray_settings', JSON.stringify(SETTINGS)); } catch (e) {}
 }
@@ -472,6 +538,7 @@ function applySettings(){
   if (b) b.className = 'board theme-' + SETTINGS.theme + (SETTINGS.coords ? '' : ' hide-coords');
   const bar = document.querySelector('.evalbar');
   if (bar) bar.style.display = SETTINGS.eval ? '' : 'none';
+  _threatFen = null;  // settings changed
   document.querySelectorAll('.theme-dot').forEach(d => d.classList.toggle('on', d.dataset.theme === SETTINGS.theme));
   const map = { setThreats:'threats', setDots:'dots', setCoords:'coords', setSound:'sound',
                 setEval:'eval', setTalk:'talk', setReview:'review', setConfirm:'confirm' };
@@ -483,89 +550,93 @@ function applySettings(){
 }
 
 /* ---------------- engine ---------------- */
-const sf = new Worker('vendor/stockfish.js');
-let onLine = null;
-let queue = Promise.resolve();
+/* Stockfish still runs in vendor/stockfish.js on its own Worker, so the board
+   never waits on a search. vendor/engine.js adds what a bare Worker does not:
+   a serial queue with cancellation, streamed info lines, a FEN-keyed
+   transposition cache and an FEN-indexed opening book. */
+const ENGINE = ChessEngine.create('vendor/stockfish.js', { hash: 32, cacheSize: 2048 });
 let engineReady = false;
 
-sf.onmessage = (e) => {
-  const d = e && e.data;
-  const line = typeof d === 'string' ? d : (d && typeof d.data === 'string' ? d.data : '');
-  if (line && onLine) onLine(line);
-};
-
-const raw = (c) => sf.postMessage(c);
-
-function enqueue(fn){
-  const next = queue.then(fn, fn);
-  queue = next.catch(() => {});
-  return next;
-}
-
-function waitFor(pred, ms){
-  return new Promise((resolve) => {
-    const t = setTimeout(() => { onLine = null; resolve(null); }, ms);
-    onLine = (line) => {
-      if (!pred(line)) return;
-      clearTimeout(t); onLine = null; resolve(line);
-    };
-  });
+function setEng(on){
+  const el = document.getElementById('eng');
+  if (!el) return;
+  const live = typeof on === 'string';
+  el.textContent = live ? on : (on ? 'engine ready' : 'engine off');
+  el.className = 'eng' + ((live || on) ? ' on' : '');
 }
 
 function initEngine(){
-  return enqueue(async () => {
-    raw('uci');
-    await waitFor(l => l === 'uciok', 5000);
-    raw('setoption name Hash value 16');
-    raw('setoption name Ponder value false');
-    raw('isready');
-    await waitFor(l => l === 'readyok', 5000);
+  return ENGINE.init().then(() => {
     engineReady = true;
     setEng(true);
     setSkill(difficulty());
   });
 }
 
-function setSkill(n){ raw('setoption name Skill Level value ' + n); }
+function setSkill(n){ ENGINE.setSkill(n); }
+
+function fmtNps(n){
+  if (!n) return '';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M nps';
+  if (n >= 1e3) return Math.round(n / 1e3) + 'k nps';
+  return n + ' nps';
+}
+
+/* Every `info depth` line lands here while the search is still running: the bar
+   slides, the arrow follows the principal variation, the pill shows depth. */
+function liveInfo(info, fen){
+  if (fen !== game.fen()) return;                 // a search for another position
+  if (info.cp !== undefined || info.mate !== undefined) paintEval(evalWhite(info, fen));
+  if (info.depth) setEng('depth ' + info.depth + (info.nps ? ' · ' + fmtNps(info.nps) : ''));
+}
+
+function clearLive(){
+  const g = document.getElementById('liveG');
+  if (g) g.innerHTML = '';
+}
 
 /* One bounded search. Always resolves, never hangs the queue.
-   depth > 0 -> fixed depth (consistent quality). depth 0 -> movetime. */
-function analyze(fen, depth, capMs){
-  return enqueue(() => new Promise((resolve) => {
-    let cp = 0, mate = null, best = null, got = false;
-    const finish = () => { onLine = null; resolve({ cp, mate, best, ok: got }); };
-    const guard = setTimeout(finish, capMs || 8000);
-    onLine = (line) => {
-      if (line.startsWith('info')){
-        const m = line.match(/score (cp|mate) (-?\d+)/);
-        if (m){ if (m[1] === 'cp'){ cp = +m[2]; mate = null; } else { mate = +m[2]; } }
-        return;
-      }
-      if (line.startsWith('bestmove')){
-        got = true;
-        best = line.split(/\s+/)[1] || null;
-        clearTimeout(guard);
-        finish();
-      }
-    };
-    // analysis always runs at full strength: a lowered Skill Level fuzzes the
-    // reported score, which would poison every rating we compute from it
-    setSkill(20);
-    raw('position fen ' + fen);
-    raw(depth > 0 ? 'go depth ' + depth : 'go movetime ' + (capMs || 300));
-  }));
+   depth > 0 -> fixed depth. depth 0 -> movetime (what live play uses, so a
+   hard position shortens the think instead of freezing the board).
+   The client answers from its FEN cache when it already knows the position. */
+function analyze(fen, depth, capMs, onlyMove, opts){
+  const o = opts || {};
+  return ENGINE.search(fen, {
+    depth: depth > 0 ? depth : 0,
+    movetime: depth > 0 ? 0 : (capMs || 300),
+    searchmoves: onlyMove || null,
+    minCachedDepth: o.minCachedDepth,
+    fresh: !!o.fresh,
+    onInfo: (info) => liveInfo(info, fen)
+  }).then((res) => {
+    clearLive();
+    setEng(res.cached ? ('cached · d' + (res.depth || 0)) : true);
+    return res;
+  });
 }
 
 function engineMove(){
-  return enqueue(async () => {
-    const ms = moveTimeMs();
-    const d = difficulty();
-    setSkill(d);
-    raw('position fen ' + game.fen());
-    raw('go movetime ' + ms);
-    const line = await waitFor(l => l.startsWith('bestmove'), ms + 5000);
-    if (!line) return null;
-    let mv = line.split(/\s+/)[1];
+  const d = difficulty();
+
+  // opening book first: the reply is a lookup, not a search, so it is 0 ms
+  if (d >= 3){
+    const b = ENGINE.book(game.fen());
+    if (b){
+      setEng('book · ' + b.name);
+      return Promise.resolve(b.uci);
+    }
+  }
+
+  // eval streams while Ray thinks; the pv stays hidden so the move is a surprise
+  return ENGINE.play(game.fen(), {
+    skill: d, movetime: moveTimeMs(),
+    onInfo: (i) => {
+      if (i.cp !== undefined || i.mate !== undefined) paintEval(evalWhite(i, game.fen()));
+      if (i.depth) setEng('depth ' + i.depth);
+    }
+  }).then((res) => {
+    setEng(res.cached ? ('cached · d' + (res.depth || 0)) : true);
+    let mv = res.best;
     if (!mv || mv === '(none)') return null;
 
     // low levels get a small human-error layer on top of Stockfish's damping
@@ -598,7 +669,16 @@ function fmt(w){
   const p = w / 100;
   return (p > 0 ? '+' : '') + p.toFixed(1);
 }
+let _evalAt = 0;
 function paintEval(w){
+  const now = performance.now();
+  if (now - _evalAt < 90){
+    lastEval = w;
+    const p0 = Math.max(-700, Math.min(700, w)) / 700;
+    document.getElementById('evalFill').style.height = (50 + p0 * 50).toFixed(1) + '%';
+    return;
+  }
+  _evalAt = now;
   lastEval = w;
   const p = Math.max(-700, Math.min(700, w)) / 700;
   document.getElementById('evalFill').style.height = (50 + p * 50).toFixed(1) + '%';
@@ -622,8 +702,32 @@ function classify(rawLoss, isBest){
 }
 const LABEL = { best:'Best', excellent:'Excellent', good:'Good', inaccuracy:'Inaccuracy',
                 mistake:'Mistake', blunder:'Blunder', forced:'Forced' };
-const COL = { best:'#6fbf5b', excellent:'#41a899', good:'#8bbf6a',
-              inaccuracy:'#dfbe57', mistake:'#df9455', blunder:'#dd5a5a', forced:'#8a93a6' };
+
+
+const BADGE_FILE = { brilliant:'brilliant', great:'great', best:'best',
+  excellent:'excellent', good:'good', book:'book', inaccuracy:'inaccuracy',
+  mistake:'mistake', miss:'miss', blunder:'blunder', forced:'forced' };
+function badgeImg(cls){
+  return '<img alt="" src="vendor/badges/' + (BADGE_FILE[cls] || 'forced') + '.png">';
+}
+
+const BADGE_ICON = {
+  brilliant: '<svg viewBox="0 0 24 24"><rect x="4" y="2" width="5" height="14" rx="1.6"/><rect x="15" y="2" width="5" height="14" rx="1.6"/><rect x="4" y="18" width="5" height="4" rx="1.4"/><rect x="15" y="18" width="5" height="4" rx="1.4"/></svg>',
+  great: '<svg viewBox="0 0 24 24"><rect x="9.5" y="2" width="5" height="14" rx="1.6"/><rect x="9.5" y="18" width="5" height="4" rx="1.4"/></svg>',
+  best: '<svg viewBox="0 0 24 24"><path d="M12 2.6l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5L2.6 9.4l6.5-.9z"/></svg>',
+  excellent: '<svg viewBox="0 0 24 24"><path d="M3 10.5h3.4V21H3zM8 21V10.5l4.2-7.2c.5-.9 1.9-.5 1.9.6v4.3h5.2c1.2 0 2 1.1 1.7 2.2l-1.7 7.4c-.2.8-.9 1.2-1.7 1.2z"/></svg>',
+  good: '<svg viewBox="0 0 24 24"><path d="M9.4 19.2L2.8 12.6l2.6-2.6 4 4 9.2-9.2 2.6 2.6z"/></svg>',
+  book: '<svg viewBox="0 0 24 24"><path d="M4 4.5C6.6 3.4 9.3 3.4 12 5c2.7-1.6 5.4-1.6 8-.5v14c-2.6-1.1-5.3-1.1-8 .5-2.7-1.6-5.4-1.6-8-.5z"/><path d="M12 5v14"/></svg>',
+  inaccuracy: '<svg viewBox="0 0 24 24"><path d="M13.2 2c4.4 0 7.3 2.6 7.3 6.4 0 3.5-2.5 5.6-5.6 6.6l-1.2 3.2H9.3l1.5-4.5c2.8-.7 4.6-2 4.6-4.2 0-1.8-1.4-2.7-3-2.7-1.7 0-3 .9-3.9 2.4L5.9 7.4C7.2 4 9.9 2 13.2 2z"/><rect x="9.3" y="19.2" width="4.1" height="3.4" rx="1.2"/><rect x="16" y="2" width="3.6" height="10" rx="1.2"/><rect x="16" y="14" width="3.6" height="3.4" rx="1.2"/></svg>',
+  mistake: '<svg viewBox="0 0 24 24"><path d="M13 2.4c4.2 0 7 2.5 7 6.2 0 3.4-2.4 5.4-5.4 6.4l-1.2 3.1H9.2l1.5-4.4c2.7-.7 4.5-1.9 4.5-4.1 0-1.7-1.3-2.6-2.9-2.6-1.6 0-2.9.9-3.8 2.3L6 7.6C7.2 4.3 9.8 2.4 13 2.4z"/><rect x="9.2" y="19" width="4" height="3.3" rx="1.2"/></svg>',
+  miss: '<svg viewBox="0 0 24 24"><path d="M5.1 4.1l6.9 6.9 6.9-6.9 1.4 1.4-6.9 6.9 6.9 6.9-1.4 1.4-6.9-6.9-6.9 6.9-1.4-1.4 6.9-6.9-6.9-6.9z"/></svg>',
+  blunder: '<svg viewBox="0 0 24 24"><path d="M9.6 2.3c3.1 0 5.2 1.8 5.2 4.5 0 2.4-1.7 3.9-3.9 4.7l-.9 2.4H6.8l1.1-3.4c2-.5 3.2-1.4 3.2-3 0-1.2-.9-1.9-2-1.9-1.2 0-2.1.6-2.8 1.7L3.8 6.3c.9-2.4 3-4 5.8-4z"/><rect x="6.8" y="16.6" width="3.6" height="3.1" rx="1.1"/><path d="M20.2 2.3c3.1 0 5.2 1.8 5.2 4.5 0 2.4-1.7 3.9-3.9 4.7l-.9 2.4h-3.2l1.1-3.4c2-.5 3.2-1.4 3.2-3 0-1.2-.9-1.9-2-1.9-1.2 0-2.1.6-2.8 1.7l-1.9-1.1c.9-2.4 3-4 5.8-4z"/><rect x="17.4" y="16.6" width="3.6" height="3.1" rx="1.1"/></svg>',
+  forced: '<svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="2.4" rx="1.2"/></svg>'
+};
+
+const SYM = { brilliant:'!!', great:'!', best:'★', excellent:'+', good:'✓', book:'📖', inaccuracy:'?!', mistake:'?', miss:'✕', blunder:'??', forced:'=' };
+const COL = { best:'#81b64c', excellent:'#5b9bd5', good:'#95b776',
+              inaccuracy:'#f7c045', mistake:'#e58f2a', blunder:'#ca3431', forced:'#8a93a6' };
 
 /* ---------------- Ray's voice ---------------- */
 const LINES = {
@@ -693,7 +797,7 @@ function render(){
   for (const cell of cells){
     const sq = cell.dataset.sq;
     cell.querySelectorAll('.piece,.dot').forEach(n => n.remove());
-    cell.classList.remove('sel','last','chk','hover');
+    cell.classList.remove('sel','last','chk','hover','hint');
 
     const fileIdx = FILES.indexOf(sq[0]);
     const row = 8 - parseInt(sq[1], 10);
@@ -708,6 +812,7 @@ function render(){
     if (lastMove && (sq === lastMove.from || sq === lastMove.to)) cell.classList.add('last');
     if (kingSq === sq) cell.classList.add('chk');
     if (selected === sq) cell.classList.add('sel');
+    if (premove && (sq === premove.from || sq === premove.to)) cell.classList.add('pre');
     if (selected && SETTINGS.dots){
       const mv = legalForSel.find(m => m.to === sq);
       if (mv){
@@ -721,6 +826,7 @@ function render(){
   updateSub();
   renderThreats();
   renderCaptured();
+  maybeRunPremove();
 }
 
 function turnLabel(){
@@ -778,10 +884,17 @@ function drawArrow(from, to, opts){
     setTimeout(() => { if (group.childNodes.length) group.innerHTML = ''; }, o.ttl);
   }
 }
-function clearArrow(){ document.getElementById('hintG').innerHTML = ''; }
+function clearArrow(){
+  document.getElementById('hintG').innerHTML = '';
+  const live = document.getElementById('liveG');
+  if (live) live.innerHTML = '';
+}
 
 /* --------- threat map: what the engine side is attacking right now --------- */
+let _threatFen = null;
 function renderThreats(){
+  if (_threatFen === game.fen()) return;
+  _threatFen = game.fen();
   const g = document.getElementById('threatG');
   if (!g) return;
   g.innerHTML = '';
@@ -813,14 +926,17 @@ function renderThreats(){
   const val = { p:1, n:3, b:3, r:5, q:9, k:0 };
   targets.sort((A, B) => val[(game.get(B[1])||{}).type] - val[(game.get(A[1])||{}).type]);
   for (const [from, to] of targets.slice(0, 8)){
-    drawArrow(from, to, { group: 'threatG', color: '#dd5a5a', opacity: .38, width: 10, head: 22 });
+    drawArrow(from, to, { group: 'threatG', color: '#ca3431', opacity: .38, width: 10, head: 22 });
   }
 }
 
 /* --------- captured material --------- */
 const PIECE_VAL = { p:1, n:3, b:3, r:5, q:9, k:0 };
 
+let _capFen = null;
 function renderCaptured(){
+  if (_capFen === game.fen()) return;
+  _capFen = game.fen();
   const el = document.getElementById('capstrip');
   if (!el) return;
   const start = { p:8, n:2, b:2, r:2, q:1 };
@@ -839,7 +955,7 @@ function renderCaptured(){
   const theirs = lost[playerColor];
   const diff = score[playerColor === 'w' ? 'b' : 'w'] - score[playerColor];
 
-  const icon = (t, c) => `<svg viewBox="0 0 45 45">${'<g fill="' + (c==='w'?'#f7f9fc':'#2a3040') + '" stroke="' + (c==='w'?'#20262f':'#0b0e13') + '" stroke-width="1.7">' + SHAPES[t] + '</g>'}</svg>`;
+  const icon = (t, c) => `<svg viewBox="0 0 100 100">${'<g fill="' + (c==='w'?'#f7f9fc':'#2a3040') + '" stroke="' + (c==='w'?'#20262f':'#0b0e13') + '" stroke-width="2.6">' + SHAPES[t] + '</g>'}</svg>`;
   const enemyCol = playerColor === 'w' ? 'b' : 'w';
 
   el.innerHTML =
@@ -854,9 +970,58 @@ function badgeAt(sq, cls){
   if (!cell) return;
   const el = document.createElement('div');
   el.className = 'badge ' + cls;
-  el.textContent = LABEL[cls];
+  el.innerHTML = badgeImg(cls);
+  el.title = LABEL[cls];
   cell.appendChild(el);
   setTimeout(() => el.remove(), 2400);
+}
+
+
+/* ---------------- premove ---------------- */
+/* While Ray thinks, you may set your next move. It is validated against a copy
+   of the position with your side to move, then played the instant he replies.
+   Dragging the same from/to again cancels it. */
+function premoveBoard(){
+  const f = game.fen().split(' ');
+  f[1] = playerColor;
+  f[3] = '-';
+  return new Chess(f.join(' '));
+}
+function isPremoveTurn(){
+  return !gameOver && !reviewing && game.turn() !== playerColor && rayMode() === 'off';
+}
+function setPremove(from, to, promo){
+  if (premove && premove.from === from && premove.to === to){
+    premove = null;
+    say('premove cancelled.');
+  } else {
+    premove = { from: from, to: to, promo: promo || 'q' };
+    say('premove set. if he walks into it, that happens.');
+  }
+  selected = null; legalForSel = []; render();
+}
+
+let _preQueued = false;
+/* render() is the one place every move path passes through, so the premove
+   fires from here without touching each reply branch. */
+function maybeRunPremove(){
+  if (!premove || _preQueued || busy || gameOver || reviewing) return;
+  if (game.turn() !== playerColor) return;
+  _preQueued = true;
+  setTimeout(() => { _preQueued = false; tryPremove(); }, 30);
+}
+
+function tryPremove(){
+  if (!premove) return false;
+  const p = premove;
+  premove = null;
+  if (game.game_over() || game.turn() !== playerColor) { render(); return false; }
+  const mv = game.moves({ verbose: true })
+    .find(m => m.from === p.from && m.to === p.to &&
+               (!m.promotion || m.promotion === p.promo));
+  if (!mv){ render(); return false; }
+  commitMove(p.from, p.to, p.promo, false);
+  return true;
 }
 
 /* ---------------- input: click + drag ---------------- */
@@ -874,11 +1039,25 @@ function onDown(e){
   const cell = e.target.closest('.sq');
   if (!cell) return;
   const sq = cell.dataset.sq;
-
-  if (!playerCanAct()){
-    // still allow inspecting: select-only preview
-  }
   const piece = game.get(sq);
+
+  if (isPremoveTurn()){
+    if (selected && sq !== selected){
+      const probe = premoveBoard();
+      const target = probe.moves({ square: selected, verbose: true }).find(m => m.to === sq);
+      if (target){ setPremove(selected, sq, target.promotion || 'q'); e.preventDefault(); return; }
+    }
+    if (piece && piece.color === playerColor){
+      selected = sq;
+      legalForSel = premoveBoard().moves({ square: sq, verbose: true });
+      render();
+      const pe = cell.querySelector('.piece');
+      if (pe) dragging = { from: sq, el: pe, moved: false, sx: e.clientX, sy: e.clientY };
+      e.preventDefault();
+      return;
+    }
+    return;
+  }
 
   if (playerCanAct() && piece && piece.color === playerColor){
     selected = sq;
@@ -958,6 +1137,41 @@ function askPromo(from, to){
   document.getElementById('promo').classList.add('on');
 }
 
+/* Smooth piece slide: clone the piece, move it, and let the real one appear
+   at the destination only when the clone lands. */
+function ghostFor(from){
+  const cell = boardEl.querySelector(`[data-sq="${from}"]`);
+  const p = cell && cell.querySelector('.piece');
+  if (!p) return null;
+  const r = p.getBoundingClientRect();
+  const g = p.cloneNode(true);
+  g.classList.add('ghost');
+  g.style.left = r.left + 'px';
+  g.style.top = r.top + 'px';
+  g.style.width = r.width + 'px';
+  g.style.height = r.height + 'px';
+  return g;
+}
+
+function slideGhost(g, to, done){
+  const cell = to && boardEl.querySelector(`[data-sq="${to}"]`);
+  if (!g || !cell){ if (g) g.remove(); if (done) done(); return; }
+  const dest = cell.querySelector('.piece');
+  if (dest) dest.style.visibility = 'hidden';
+  const a = g.getBoundingClientRect();
+  const b = cell.getBoundingClientRect();
+  document.body.appendChild(g);
+  requestAnimationFrame(() => {
+    g.style.transition = 'transform .17s cubic-bezier(.22,.75,.2,1)';
+    g.style.transform = `translate(${b.left - a.left}px, ${b.top - a.top}px)`;
+  });
+  setTimeout(() => {
+    g.remove();
+    if (dest) dest.style.visibility = '';
+    if (done) done();
+  }, 185);
+}
+
 /* ---------------- move flow ---------------- */
 function rayMode(){ return document.getElementById('ray').value; }
 
@@ -967,8 +1181,10 @@ function commitMove(from, to, promo, isRay){
 
   const fenBefore = game.fen();
   const onlyMove = game.moves().length === 1;
+  const ghost = ghostFor(from);
   const mv = game.move({ from, to, promotion: promo || 'q' });
-  if (!mv) { render(); return; }
+  if (!mv) { if (ghost) ghost.remove(); render(); return; }
+  slideGhost(ghost, to);
 
   lastMove = { from, to };
   history.push({ san: mv.san, from, to, promotion: promo || 'q', color: mv.color,
@@ -986,29 +1202,37 @@ function commitMove(from, to, promo, isRay){
 async function gradeThenReply(mv){
   if (game.game_over()){ endGame(); return; }
 
-  const fenAfter = game.fen();
   const h = history[history.length - 1];
+  const fenBefore = h.fenBefore;
 
   busy = true; statusBar('thinking');
   setRate('…', 'checking', 'hold on, looking…');
 
-  const res = await analyze(fenAfter, T.grade, T.gradeCap);
-  const postWhite = evalWhite(res, fenAfter);
-  const postPlayer = playerPov(postWhite);
+  // Grade at one root: the engine's best move, then the same position with the
+  // search restricted to the move played. Same budget, same root, so tempo is
+  // never counted as a mistake (this is what the desktop build does too).
+  const bestRes = await analyze(fenBefore, 0, T.gradeMs);
+  const uci = mv.from + mv.to + (mv.promotion || '');
+  const playedRes = bestRes.best === uci
+    ? bestRes
+    : await analyze(fenBefore, 0, T.gradeMs, uci);
 
-  const isBest = res.best && res.best.slice(0,2) === mv.from && res.best.slice(2,4) === mv.to;
-  let loss = preEval === null ? 0 : Math.max(0, preEval - postPlayer);
+  const bestCp = bestRes.cp || 0;
+  const playedCp = (playedRes && playedRes.cp !== undefined) ? playedRes.cp : bestCp;
+  const isBest = bestRes.best === uci;
+  const loss = Math.max(0, bestCp - playedCp);
   const cls = h.onlyMove ? 'forced' : classify(loss, isBest);
+  const postWhite = mv.color === 'w' ? playedCp : -playedCp;
 
-  h.cls = cls; h.cpLoss = loss;
-  preEval = postPlayer;
+  h.cls = cls; h.cpLoss = loss; h.best = bestRes.best || null;
+  preEval = postWhite;
 
   paintEval(postWhite);
   badgeAt(mv.to, cls);
   setRate(LABEL[cls], cls, cls === 'forced' ? 'Only legal move.' :
           cls === 'best' ? "Engine's top choice." :
-          `Cost you about <b>${(loss/100).toFixed(2)}</b> pawns.`);
-  react(mv, cls);
+          `Engine loss <b>-${(loss/100).toFixed(2)}</b>.`);
+  react(mv, cls, bestRes);
   renderMoves();
 
   // Ray replies
@@ -1075,27 +1299,64 @@ function scheduleAuto(){
   }, 420);
 }
 
-function react(mv, cls){
-  if (!SETTINGS.talk) return;
-  let line = pick(LINES[cls] || LINES.good);
-  if (Math.random() < 0.4){
-    if (mv.flags.includes('c')) line += ' ' + pick(TACKON.cap);
-    else if (mv.san.includes('+')) line += ' ' + pick(TACKON.chk);
-    else line += ' ' + pick(TACKON.quiet);
+function streakOf(cls){
+  const good = ['best','great','excellent'];
+  const bad = ['blunder','mistake','miss'];
+  const want = good.includes(cls) ? good : bad.includes(cls) ? bad : null;
+  if (!want) return 0;
+  let n = 0;
+  for (let i = history.length - 1; i >= 0; i--){
+    const h = history[i];
+    if (h.color !== playerColor || !h.cls || h.cls === 'opp') continue;
+    if (want.includes(h.cls)) n++; else break;
   }
-  say(line);
+  return n;
+}
+
+function react(mv, cls, bestRes){
+  if (!SETTINGS.talk) return;
+  const h = history[history.length - 1] || {};
+  const uci = mv.from + mv.to + (mv.promotion || '');
+  let bestSan = null;
+  if (bestRes && bestRes.best && bestRes.best !== uci){
+    try {
+      const probe = new Chess(h.fenBefore);
+      const bm = probe.move({ from: bestRes.best.slice(0,2), to: bestRes.best.slice(2,4),
+                              promotion: bestRes.best.length > 4 ? bestRes.best[4] : 'q' });
+      bestSan = bm ? bm.san : null;
+    } catch (e){}
+  }
+  const ctx = {
+    san: mv.san, from: mv.from, to: mv.to,
+    piece: NAME[mv.piece] || 'piece',
+    captured: mv.captured ? NAME[mv.captured] : null,
+    check: /[+#]/.test(mv.san),
+    castle: mv.flags.includes('k') || mv.flags.includes('q'),
+    promo: !!mv.promotion,
+    cls: cls, only: !!h.onlyMove,
+    bestSan: bestSan, bestTo: bestRes && bestRes.best ? bestRes.best.slice(2,4) : null,
+    lossText: ((h.cpLoss || 0) / 100).toFixed(2),
+    evalCp: lastEval, moveNo: Math.floor(history.length / 2) + 1,
+    streak: streakOf(cls)
+  };
+  say(Ray.comment(ctx));
 }
 
 function setRate(chipText, cls, html){
   const chip = document.getElementById('chip');
-  chip.textContent = chipText;
-  chip.style.background = COL[cls] || '#2a3040';
-  chip.style.color = '#0d1117';
+  const word = String(chipText || '').toLowerCase();
+  const neutral = ['ready', 'booting', 'review', 'new game', 'reverted', 'done', 'review done']
+    .some(w => word.startsWith(w));
+  chip.innerHTML = neutral ? '•' : badgeImg(cls);
+  chip.title = chipText;
+  chip.style.background = 'transparent';
+  chip.style.color = '#fff';
   document.getElementById('rateTxt').innerHTML = html;
 }
 
 /* ---------------- moves list ---------------- */
 const GLYPH = { best:'★', excellent:'+', good:'·', inaccuracy:'?!', mistake:'?', blunder:'??', forced:'=' };
+const FIG = { n:'♞', b:'♝', r:'♜', q:'♛', k:'♚' };  // figurine SAN, chess.com style
 
 function renderMoves(){
   const el = document.getElementById('moves');
@@ -1117,7 +1378,13 @@ function renderMoves(){
       const s = document.createElement('span');
       s.className = 'm';
       if (h){
-        s.textContent = h.san;
+        const lead = h.san[0].toLowerCase();
+        if (FIG[lead]){
+          s.innerHTML = '<span class="fig">' + FIG[lead] + '</span>' + h.san.slice(1);
+        } else {
+          s.textContent = h.san;
+        }
+        if (idx === history.length - 1) s.classList.add('cur');
         if (h.cls && h.cls !== 'opp'){
           const g = document.createElement('span');
           g.className = 'g ' + h.cls;
@@ -1151,7 +1418,7 @@ function jumpTo(ply){
   game.load(g.fen());
   history = trimmed;
   lastMove = history.length ? { from: history[history.length-1].from, to: history[history.length-1].to } : null;
-  gameOver = false; preEval = null; selected = null; legalForSel = []; clearArrow();
+  gameOver = false; preEval = null; selected = null; legalForSel = []; premove = null; clearArrow();
   document.getElementById('prog').classList.remove('on');
   renderMoves(); render();
   say('rewound. no judgement. okay, maybe a little.');
@@ -1160,7 +1427,7 @@ function jumpTo(ply){
 
 async function refreshBaseline(){
   const fen = game.fen();
-  const res = await analyze(fen, T.grade, T.gradeCap);
+  const res = await analyze(fen, 0, T.gradeMs);
   const w = evalWhite(res, fen);
   preEval = playerPov(w);
   paintEval(w);
@@ -1203,8 +1470,22 @@ async function hint(){
     return;
   }
 
+  // theory first: a book move costs nothing and is a better hint than a search
+  const book = ENGINE.book(game.fen());
+  if (book){
+    const from = book.uci.slice(0, 2);
+    const piece = game.get(from);
+    const cell = boardEl.querySelector(`[data-sq="${from}"]`);
+    if (cell) cell.classList.add('hint');
+    hintCache = book.uci;
+    hintArmed = true;
+    say(`${book.name} is theory. look at your ${piece ? NAME[piece.type] : 'piece'} on ${book.uci.slice(0, 2)}. ` +
+        'press hint again to just say it.');
+    return;
+  }
+
   say('gimme a sec…');
-  const res = await analyze(game.fen(), T.hint, T.hintCap);
+  const res = await analyze(game.fen(), 0, T.hintMs, null, { minCachedDepth: 14 });
   if (!res.best || res.best === '(none)'){ say("i've got nothing. worrying for both of us."); return; }
 
   const from = res.best.slice(0,2), to = res.best.slice(2,4);
@@ -1250,7 +1531,7 @@ async function reviewGame(){
 
   for (let i = 0; i < fens.length; i++){
     if (cancelReview) break;
-    const r = await analyze(fens[i], T.review, T.reviewCap);
+    const r = await analyze(fens[i], 0, T.reviewMs);
     evals.push(evalWhite(r, fens[i]));
     bar.style.width = (((i + 1) / fens.length) * 100).toFixed(1) + '%';
     setRate('review', 'forced', `Move ${i + 1} of ${fens.length}…`);
@@ -1334,202 +1615,29 @@ async function engineReplyOnce(){
   }
 }
 
-/* ---------------- chat ---------------- */
-/* Ray has two mouths: the canned one below (always works, zero network)
-   and Groq when a key is present. */
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'openai/gpt-oss-20b';
-let chatLog = [];
-let groqBusy = false;
-let PROVS = [];             // from /api/health: id, label, model, handle, ready
-let proxyUp = false;
-
-/* one place that builds the conversation, whichever mouth answers */
-function rayMessages(text){
-  return [
-    { role: 'system', content: RAY_SYSTEM },
-    { role: 'system', content: 'Current position:\n' + positionContext() },
-    ...chatLog.slice(-8),
-    { role: 'user', content: text }
-  ];
-}
-function pushLog(text, out){
-  chatLog.push({ role: 'user', content: text }, { role: 'assistant', content: out });
-  if (chatLog.length > 24) chatLog = chatLog.slice(-24);
-}
-
-const RAY_SYSTEM = `You are Ray, a chess coach living inside a small browser app.
-You are a club-strength player, roughly 1400. You are NOT a master, NOT an engine, and you say so when it matters.
-Voice: casual, dry, a little self-deprecating. Lowercase is fine. 1-2 short sentences, max 45 words. No lists, no emoji, no markdown.
-You can read the position data you're given. Never invent concrete engine lines or variations you weren't given.
-If asked something you can't know, say so plainly. If the user blunders, be kind but honest. Never pretend to be a real person.`;
-
-/* ------- providers ------- */
-function currentProv(){
-  const id = document.getElementById('prov').value || 'groq';
-  return PROVS.find(p => p.id === id) || { id: id, label: id, model: '', handle: id, ready: false };
-}
-function currentModel(){
-  const v = (document.getElementById('modelIn').value || '').trim();
-  return v || currentProv().model;
-}
-function groqKey(){ return ''; }   // keys live in the vault, never in the browser
-
-function setKeyStat(){
-  const el = document.getElementById('keyStat');
-  if (!el) return;
-  const p = currentProv();
-  const ok = p.ready || p.keyless;
-  el.textContent = !proxyUp ? 'offline' : ok ? (p.keyless ? 'local' : 'vault') : 'no key';
-  el.className = 'kstat' + (ok && proxyUp ? ' on' : '');
-  el.title = ok ? 'resolved server-side from the secrets-mcp vault' : 'paste a key below';
-  const note = document.getElementById('provNote');
-  if (note){
-    note.textContent = !proxyUp ? 'proxy not running — Ray falls back to canned lines'
-      : p.keyless ? 'no key needed, talking to ' + p.model
-      : ok ? 'key stored in the vault as {{' + p.handle + '}}'
-      : 'store a key for ' + p.label + ' to wake Ray up';
-  }
-}
-
-function fillProviders(providers, activeId){
-  PROVS = providers || [];
-  const sel = document.getElementById('prov');
-  sel.innerHTML = PROVS.map(p => `<option value="${p.id}">${p.label}${p.ready || p.keyless ? '' : ' — no key'}</option>`).join('');
-  const want = activeId || (PROVS.find(p => p.ready || p.keyless) || PROVS[0] || {}).id || 'groq';
-  sel.value = want;
-  document.getElementById('modelIn').value = currentProv().model || '';
-  setKeyStat();
-}
-
-async function loadProviders(){
-  try {
-    const r = await fetch('/api/health');
-    if (!r.ok) throw new Error('no proxy');
-    const j = await r.json();
-    proxyUp = true;
-    fillProviders(j.providers, j.provider);
-  } catch (e){
-    proxyUp = false;
-    PROVS = [{ id: 'groq', label: 'Groq', model: 'openai/gpt-oss-20b', handle: 'groq', ready: false }];
-    const sel = document.getElementById('prov');
-    if (sel) sel.innerHTML = '<option value="groq">Groq</option>';
-    const m = document.getElementById('modelIn');
-    if (m) m.value = 'openai/gpt-oss-20b';
-    setKeyStat();
-  }
-}
-
-function positionContext(){
+/* ---------------- talking to Ray ---------------- */
+/* No network, no API key: Ray reads the position and answers. */
+function rayCtx(){
   const last = history[history.length - 1];
-  const me = history.filter(h => h.color === playerColor && h.cls && h.cls !== 'opp');
-  const rated = me.length || 0;
-  const acc = accuracy();
-  const bits = [
-    'FEN: ' + game.fen(),
-    'Player is ' + (playerColor === 'w' ? 'White' : 'Black') + ', opponent strength ' + difficulty() + '/20.',
-    'Evaluation: ' + fmt(lastEval || 0) + ' (white point of view).',
-    last ? 'Last move: ' + last.san + (last.cls && last.cls !== 'opp' ? ' — rated ' + last.cls + ', lost ' + (last.cpLoss/100).toFixed(2) + ' pawns.' : ' — made by the opponent.') : 'No moves yet.',
-    rated ? 'Player accuracy so far: ' + acc + '% over ' + rated + ' rated moves.' : '',
-    game.in_check() ? 'Side to move is in check.' : ''
-  ];
-  return bits.filter(Boolean).join('\n');
+  return {
+    eval: fmt(lastEval || 0), evalText: fmt(lastEval || 0),
+    n: Math.floor(history.length / 2) + 1,
+    accuracy: accuracy(),
+    san: last ? last.san : '', to: last ? last.to : '?'
+  };
 }
+function reply(text){ return Ray.chat(text, rayCtx()); }
 
-/* Preferred path: the local proxy resolves the key from the secrets-mcp vault.
-   The browser never sees it. */
-async function askProxy(text){
-  try {
-    const r = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: currentProv().id,
-        model: currentModel(),
-        messages: rayMessages(text)
-      })
-    });
-    if (r.status === 503) return { noKey: true };
-    if (!r.ok){
-      let msg = 'proxy said ' + r.status;
-      try { const j = await r.json(); msg = j.error + (j.detail ? ' — ' + j.detail : ''); } catch (e) {}
-      return { fatal: msg.slice(0, 140) };
-    }
-    const j = await r.json();
-    const out = (j.content || '').trim();
-    if (!out) return { fatal: 'empty reply from ' + (j.provider || 'provider') };
-    pushLog(text, out);
-    return { text: out };
-  } catch (e){
-    return { offline: true };      // plain static server, no proxy
-  }
-}
-
-async function askGroq(text){
-  const key = groqKey();
-  if (!key) return null;
-  if (groqBusy) return null;
-  groqBusy = true;
-  try {
-    const r = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages: rayMessages(text),
-        temperature: 0.85,
-        max_completion_tokens: 400,
-        reasoning_effort: 'low'      // gpt-oss burns tokens thinking; keep the reply quick
-      })
-    });
-    if (!r.ok){
-      const body = await r.text();
-      throw new Error(r.status + ' ' + body.slice(0, 160));
-    }
-    const j = await r.json();
-    const out = j && j.choices && j.choices[0] && j.choices[0].message
-      ? (j.choices[0].message.content || '').trim() : '';
-    if (!out) throw new Error('empty reply');
-    pushLog(text, out);
-    return out;
-  } catch (err){
-    console.warn('groq:', err.message);
-    say('groq\'s not answering — <span style="opacity:.7">' + String(err.message).slice(0, 80) + '</span>');
-    return null;
-  } finally {
-    groqBusy = false;
-  }
-}
-
-function reply(text){
-  const t = text.toLowerCase();
-  if (/(why|explain)/.test(t)) return pick([
-    "honestly? i read the engine's number and then talk like i knew it all along.",
-    "the eval bar is the real coach. i'm the personality hire.",
-    "because stockfish says so, and i'm not brave enough to argue."
-  ]);
-  if (/(hint|help|what should)/.test(t)){ hint(); return null; }
-  if (/^(hi|hello|hey|yo)\b/.test(t)) return pick(['hey. good to see you.','yo. let\'s play.','hey — i\'m ray. mid at chess, honest about it.']);
-  if (/(rating|elo|good am i)/.test(t)){
-    const a = accuracy();
-    return 'elo is a lie and i don\'t trust it. ' + (a !== null ? `you're on ${a}% accuracy today.` : 'play some moves and i\'ll tell you.');
-  }
-  if (/(undo|take ?back|revert)/.test(t)) return 'hit revert. i won\'t tell anyone.';
-  if (/(thanks|ty|nice|good)/.test(t)) return pick(['appreciate it.','we\'re both doing our best.','don\'t thank me, thank the eval bar.']);
-  if (/(bad|suck|terrible)/.test(t)) return 'yeah. i know. the coach who can\'t coach. it\'s a whole thing.';
-  if (/(stockfish|engine)/.test(t)) return 'yep, stockfish underneath. i just put a jacket on it.';
-  if (/(review)/.test(t)) return 'finish the game and i\'ll go through every move properly. that\'s the part i\'m good at.';
-  return pick(['i\'m a chess coach, not a chatbot. ask about the position.',
-               'mm. play a move and i\'ll have something real to say.',
-               'noted. now move something.']);
+function sendChat(){
+  const inp = document.getElementById('chatIn');
+  if (!inp) return;
+  const v = inp.value.trim(); if (!v) return;
+  inp.value = '';
+  if (/^(hint|help|\?+|h)$/i.test(v) || /\bgive me a hint\b/i.test(v)){ hint(); return; }
+  say(reply(v));
 }
 
 /* ---------------- misc ---------------- */
-function setEng(on){
-  const el = document.getElementById('eng');
-  el.textContent = on ? 'engine ready' : 'engine off';
-  el.className = 'eng' + (on ? ' on' : '');
-}
 let ac = null;
 function click(kind){
   if (!SETTINGS.sound) return;
@@ -1592,56 +1700,6 @@ document.querySelectorAll('.theme-dot').forEach(btn => {
   };
 });
 
-/* provider picker + key import (the key goes to the local vault, not to us) */
-document.getElementById('prov').onchange = () => {
-  document.getElementById('modelIn').value = currentProv().model || '';
-  setKeyStat();
-};
-document.getElementById('importBtn').onclick = async () => {
-  const field = document.getElementById('importKey');
-  const key = field.value.trim();
-  const p = currentProv();
-  const note = document.getElementById('provNote');
-  if (!p.handle){ note.textContent = p.label + ' needs no key'; return; }
-  if (!key){ field.focus(); note.textContent = 'paste a key first'; return; }
-  note.textContent = 'saving to vault…';
-  try {
-    const r = await fetch('/api/import', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ handle: p.handle, key: key })
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || 'failed');
-    field.value = '';
-    p.ready = true;
-    setKeyStat();
-    note.textContent = 'stored in the vault as {{' + j.handle + '}} ' + (j.hint || '');
-    say('got it. key\'s in the vault, i never see it.');
-  } catch (e){
-    note.textContent = 'could not save: ' + e.message;
-  }
-};
-document.getElementById('importKey').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('importBtn').click();
-});
-
-async function sendChat(){
-  const inp = document.getElementById('chatIn');
-  const v = inp.value.trim(); if (!v) return;
-  inp.value = '';
-
-  // instant local answer for a bare request, everything else goes to Ray
-  if (/^(hint|help|\?+|h)$/i.test(v) || /\bgive me a hint\b/i.test(v)){ hint(); return; }
-
-  say('<span style="opacity:.55">…</span>');
-
-  // vault proxy first, canned lines as the floor
-  const r = await askProxy(v);
-  if (r.text){ saySafe(r.text); return; }
-  if (r.fatal){ say(r.fatal); return; }
-  const r2 = reply(v);
-  if (r2) say(r2);
-}
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   const k = e.key.toLowerCase();
@@ -1670,16 +1728,13 @@ document.getElementById('lvVal').textContent = diffLabel(difficulty());
 document.getElementById('lvlTag').textContent = diffName(difficulty()).toUpperCase();
 applySettings();
 
-// providers + vault status
-loadProviders();
-
 setRate('booting', 'forced', 'Warming up the engine…');
 say('One sec — starting stockfish. I\'m not fast, I\'m honest.');
 
 initEngine().then(async () => {
   say("Engine's alive. I'm Ray — decent club player, much better heckler. Your move.");
   setRate('ready', 'forced', "Make a move — I'll rate it instantly.");
-  const res = await analyze(game.fen(), T.grade, T.gradeCap);
+  const res = await analyze(game.fen(), 0, T.gradeMs);
   const w = evalWhite(res, game.fen());
   preEval = playerPov(w);
   paintEval(w);

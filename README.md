@@ -11,6 +11,30 @@ real local process and answers in about 30ms.
 
 Stockfish does the analysis. Ray does the talking. Ray is not a pro, he says so.
 
+
+## What's new in this build
+
+- **Native desktop shell (Qt / PySide6)** — no Tkinter, no webview, no Electron. `desktop/qt_app.py`.
+- **Engine client** — Stockfish in a worker with a serial queue, cancellation, streamed `info depth`, an FEN-keyed transposition cache and an FEN-indexed opening book (`vendor/engine.js` for web/mobile, `Engine` in `app.py` for native).
+- **Premove** — set your next move while Ray thinks; both squares go red, the move fires the instant he replies, dragging the same squares again cancels it.
+- **Ray is local** — no Groq, no API key, no network. Lines are built from the actual move (piece, squares, capture, check, what was better) and never repeat back to back (`vendor/ray.js`, `Ray` in `app.py`).
+- **Chess.com presentation** — #eeeed2/#769656 board, `!! ! ★ 👍 ✓ 📖 ?! ? ✕ ??` badges pinned to the destination square's top-right corner, figurine move list, glass panels.
+- **Shipping** — `release/ChessCoach.exe` and `release/Chess Coach.apk`.
+
+### Desktop build
+
+```powershell
+pip install PySide6-Essentials pyinstaller
+python -m PyInstaller --noconfirm --onefile --noconsole --name ChessCoach ^
+  --icon assets/icon.ico --add-data "assets;assets" --paths . desktop\qt_app.py
+```
+
+Stockfish is still expected at `%APPDATA%\ChessCoach\engine\stockfish.exe`; if it is missing the app shows an install window with progress instead of failing.
+
+### Phone build
+
+`chess-coach-mobile/` is the Capacitor project; `www/` is the UI that ships in the APK.
+
 ## Install
 
 ```powershell

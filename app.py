@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import urllib.request
+from collections import OrderedDict
 from pathlib import Path
 
 import chess
@@ -27,12 +28,14 @@ from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 APP = "Chess Coach"
 NOISE = 15                     # cp we do not count against you
-GRADE_DEPTH = 14
+GRADE_DEPTH = 12               # live grade: ~60-110 ms, the reply never waits
 MOVE_TIME_MS = 150
 REVIEW_DEPTH = 16
-PREFETCH_DEPTH = 14            # background grades, one notch cheaper
+PREFETCH_DEPTH = 16            # background pass deepens every grade afterwards
 SLIDE_MS = 170
 SIDEBAR_W = 46                 # width of the button strip left of the board
+CACHE_MAX = 4096               # FEN entries kept in the transposition cache
+GRADE_CACHE_MAX = 1024
 
 
 def depth_for(level: int) -> int:
@@ -97,6 +100,41 @@ def engine_path():
     return Path(found) if found else None
 
 
+def syzygy_dir():
+    """Optional Syzygy tablebases. Drop .rtbw/.rtbz files in
+    %APPDATA%\\ChessCoach\\syzygy (or point CHESSCOACH_SYZYGY at the folder)
+    and Stockfish probes them itself - no extra code on our side."""
+    env = os.environ.get("CHESSCOACH_SYZYGY")
+    cands = [Path(env)] if env else []
+    cands.append(data_dir() / "syzygy")
+    for c in cands:
+        try:
+            if c.is_dir() and any(c.glob("*.rtbw")):
+                return str(c)
+        except OSError:
+            pass
+    return None
+
+
+def normalize_fen(fen: str) -> str:
+    """Position key for the transposition cache: move counters dropped, and an
+    en-passant square nobody can capture on treated as '-'. Two FENs that reach
+    the same position this way share one cached evaluation."""
+    parts = str(fen).split()
+    if len(parts) < 4:
+        return str(fen)
+    board, turn, castling, ep = parts[:4]
+    if ep != "-":
+        try:
+            probe = chess.Board(" ".join([board, turn, castling, ep, "0", "1"]))
+            if not any(probe.is_en_passant(mv)
+                       for mv in probe.generate_pseudo_legal_moves()):
+                ep = "-"
+        except ValueError:
+            pass
+    return " ".join([board, turn, castling, ep])
+
+
 # secrets-mcp lives next door in the dev tree, bundled inside the exe
 for candidate in (Path(__file__).resolve().parent.parent / "secrets-mcp", res()):
     if (candidate / "secrets_mcp").is_dir() and str(candidate) not in sys.path:
@@ -106,8 +144,13 @@ for candidate in (Path(__file__).resolve().parent.parent / "secrets-mcp", res())
 # --------------------------------------------------------------------------
 # engine
 # --------------------------------------------------------------------------
+def _num(line: str, pattern: str, default: int = 0) -> int:
+    m = re.search(pattern, line)
+    return int(m.group(1)) if m else default
+
+
 class Engine:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, syzygy: str | None = None):
         si = None
         if os.name == "nt":
             si = subprocess.STARTUPINFO()
@@ -120,12 +163,21 @@ class Engine:
         )
         self.q: queue.Queue[str] = queue.Queue()
         self.lock = threading.Lock()
+        # application-level transposition cache: FEN -> evaluation. Stockfish's
+        # own Hash table only survives inside one session and is shared with
+        # every other search; this one answers hints and re-grades instantly.
+        self.cache: "OrderedDict[str, dict]" = OrderedDict()
+        self.grades: "OrderedDict[str, dict]" = OrderedDict()
+        self.hits = 0
+        self.syzygy = syzygy
         threading.Thread(target=self._read, daemon=True).start()
         self.send("uci")
         self.wait(lambda l: l == "uciok", 10)
         self.send("setoption name Threads value 2")
-        self.send("setoption name Hash value 64")
+        self.send("setoption name Hash value 128")
         self.send("setoption name Ponder value false")
+        if syzygy:
+            self.send(f"setoption name SyzygyPath value {syzygy}")
         self.send("isready")
         self.wait(lambda l: l == "readyok", 10)
         self.skill(20)
@@ -158,10 +210,53 @@ class Engine:
     def skill(self, level: int):
         self.send(f"setoption name Skill Level value {max(0, min(20, int(level)))}")
 
+    # ---------------- transposition cache ----------------
+    def _cache_get(self, key, depth=None, min_depth=10):
+        ent = self.cache.get(key)
+        if ent is None:
+            return None
+        if depth is not None and ent.get("depth", 0) < depth:
+            return None
+        if depth is None and ent.get("depth", 0) < min_depth:
+            return None
+        self.cache.move_to_end(key)
+        self.hits += 1
+        return ent
+
+    def _cache_put(self, key, entry):
+        self.cache[key] = entry
+        self.cache.move_to_end(key)
+        while len(self.cache) > CACHE_MAX:
+            self.cache.popitem(last=False)
+
+    def _grade_get(self, key):
+        ent = self.grades.get(key)
+        if ent is not None:
+            self.grades.move_to_end(key)
+            self.hits += 1
+        return ent
+
+    def _grade_put(self, key, entry):
+        self.grades[key] = entry
+        self.grades.move_to_end(key)
+        while len(self.grades) > GRADE_CACHE_MAX:
+            self.grades.popitem(last=False)
+
+    def new_game(self):
+        """Reset the engine's own search state; our cache survives on purpose."""
+        self.send("ucinewgame")
+        self.send("isready")
+        self.wait(lambda l: l == "readyok", 5)
+
     def _search(self, fen: str, depth=None, timeout=12.0, moves=None,
-                multipv=1, movetime=None):
+                multipv=1, movetime=None, on_info=None):
         """One bounded search. Returns lines, best first:
-        [{"cp": white-view int, "mate": int | None, "uci": str}]"""
+        [{"cp": white-view int, "mate": int | None, "uci": str, "depth": int}]
+
+        on_info, when given, is called for every completed depth while the
+        engine is still searching: {depth, cp, mate, uci, pv, nodes, nps,
+        white_cp, white_mate}. That is what drives the live eval bar and the
+        live best-move arrow."""
         with self.lock:
             found = {}
             self.skill(20)                     # fuzzed scores would poison grading
@@ -175,6 +270,8 @@ class Engine:
                 go += f" searchmoves {moves}"
             self.send(go)
             end = time.time() + timeout
+            finished = False
+            emit_depth = -1
             while time.time() < end:
                 try:
                     line = self.q.get(timeout=max(0.01, end - time.time()))
@@ -186,16 +283,50 @@ class Engine:
                         continue
                     idx_m = re.search(r"multipv (\d+)", line)
                     idx = int(idx_m.group(1)) if idx_m else 1
-                    e = found.setdefault(idx, {"cp": 0, "mate": None, "uci": None})
+                    e = found.setdefault(idx, {"cp": 0, "mate": None, "uci": None,
+                                               "depth": 0})
                     if m.group(1) == "cp":
                         e["cp"], e["mate"] = int(m.group(2)), None
                     else:
                         e["mate"], e["cp"] = int(m.group(2)), None
-                    pv_m = re.search(r" pv (\S+)", line)
+                    d_m = re.search(r" depth (\d+)", line)
+                    if d_m:
+                        e["depth"] = int(d_m.group(1))
+                    pv_m = re.search(r" pv (.+)$", line)
                     if pv_m:
-                        e["uci"] = pv_m.group(1)
+                        pv = pv_m.group(1).split()
+                        e["uci"] = pv[0]
+                        if on_info and idx == 1 and e["depth"] > emit_depth:
+                            emit_depth = e["depth"]
+                            sign = 1 if fen.split()[1] == "w" else -1
+                            cp = e["cp"] or 0
+                            mate = e["mate"]
+                            on_info({
+                                "depth": e["depth"],
+                                "cp": cp,
+                                "mate": mate,
+                                "uci": pv[0],
+                                "pv": pv,
+                                "nodes": _num(line, r" nodes (\d+)"),
+                                "nps": _num(line, r" nps (\d+)"),
+                                "white_cp": sign * cp,
+                                "white_mate": None if mate is None else sign * mate,
+                            })
                 elif line.startswith("bestmove"):
+                    finished = True
                     break
+            if not finished:
+                # stop the search and swallow its late bestmove: otherwise the
+                # next search reads the previous one's result
+                self.send("stop")
+                drain = time.time() + 1.5
+                while time.time() < drain:
+                    try:
+                        line = self.q.get(timeout=max(0.01, drain - time.time()))
+                    except queue.Empty:
+                        break
+                    if line.startswith("bestmove"):
+                        break
             if multipv > 1:
                 self.send("setoption name MultiPV value 1")
             side = "w" if fen.split()[1] == "w" else "b"
@@ -208,22 +339,34 @@ class Engine:
                 else:
                     val = e["cp"] or 0
                 out.append({"cp": val if side == "w" else -val,
-                            "mate": mate, "uci": e["uci"]})
+                            "mate": mate, "uci": e["uci"],
+                            "depth": e["depth"]})
             return out
 
-    def analyze(self, fen: str, depth: int, timeout=12.0):
-        """Returns (cp_white, mate_white, best_uci). Always bounded."""
-        lines = self._search(fen, depth, timeout)
+    def analyze(self, fen: str, depth: int, timeout=12.0, on_info=None):
+        """Returns (cp_white, mate_white, best_uci). Answers from the cache
+        when the same position was already searched at least this deep."""
+        key = normalize_fen(fen)
+        hit = self._cache_get(key, depth)
+        if hit is not None:
+            return hit["cp"], hit["mate"], hit["uci"]
+        lines = self._search(fen, depth, timeout, on_info=on_info)
         if not lines:
             return 0, None, None
         top = lines[0]
+        self._cache_put(key, {"cp": top["cp"], "mate": top["mate"],
+                              "uci": top["uci"], "depth": top.get("depth", depth)})
         return top["cp"], top["mate"], top["uci"]
 
-    def grade(self, fen: str, uci: str, depth: int, timeout=10.0):
+    def grade(self, fen: str, uci: str, depth: int, timeout=10.0, on_info=None):
         """Score the played move against the engine's best from the same root
         and depth. Same-root comparison keeps tempo out of the loss; comparing
         the position before the move with the one after it cannot."""
-        lines = self._search(fen, depth, timeout, multipv=2)
+        key = (normalize_fen(fen), uci, int(depth))
+        hit = self._grade_get(key)
+        if hit is not None:
+            return hit
+        lines = self._search(fen, depth, timeout, multipv=2, on_info=on_info)
         best = lines[0] if lines else {"cp": 0, "mate": None, "uci": None}
         second = lines[1] if len(lines) > 1 else None
         if best.get("uci") == uci:
@@ -231,7 +374,9 @@ class Engine:
         else:
             played_lines = self._search(fen, depth, timeout, moves=uci)
             played = played_lines[0] if played_lines else None
-        return {"best": best, "second": second, "played": played}
+        out = {"best": best, "second": second, "played": played}
+        self._grade_put(key, out)
+        return out
 
     def play(self, fen: str, level: int, depth: int | None = None,
              ms: int = MOVE_TIME_MS, budget_ms: int = 1400):
@@ -292,15 +437,26 @@ class Engine:
             uci = random.choice(legal).uci()
         return uci
 
-    def best_move(self, fen: str, ms: int = 2500):
+    def best_move(self, fen: str, ms: int = 2500, on_info=None):
         """Full-strength move plus its score, for hints and for grading a move
-        the player already asked about. Returns a dict or None."""
-        lines = self._search(fen, timeout=ms / 1000 + 3, multipv=2, movetime=ms)
+        the player already asked about. Cached: a second hint on the same
+        position is a dictionary lookup, not a search."""
+        key = normalize_fen(fen)
+        hit = self._cache_get(key, None, min_depth=8)
+        if hit is not None and hit.get("uci"):
+            return {"uci": hit["uci"], "cp": hit["cp"], "mate": hit["mate"],
+                    "cp2": hit.get("cp2"), "depth": hit.get("depth", 0),
+                    "cached": True}
+        lines = self._search(fen, timeout=ms / 1000 + 3, multipv=2,
+                             movetime=ms, on_info=on_info)
         if not lines:
             return None
         top = lines[0]
-        return {"uci": top["uci"], "cp": top["cp"], "mate": top["mate"],
-                "cp2": lines[1]["cp"] if len(lines) > 1 else None}
+        info = {"uci": top["uci"], "cp": top["cp"], "mate": top["mate"],
+                "cp2": lines[1]["cp"] if len(lines) > 1 else None,
+                "depth": top.get("depth", 0)}
+        self._cache_put(key, info)
+        return info
 
     def close(self):
         try:
@@ -314,8 +470,8 @@ class Engine:
 # --------------------------------------------------------------------------
 # pieces drawn with PIL (same flat style as the web build)
 # --------------------------------------------------------------------------
-PIECE_FILL = {"w": "#f7f9fc", "b": "#2a3040"}
-PIECE_STROKE = {"w": "#20262f", "b": "#0b0e13"}
+PIECE_FILL = {"w": "#fbfbfb", "b": "#3b3936"}
+PIECE_STROKE = {"w": "#4c4a47", "b": "#141312"}
 BASE = [(20, 80), (80, 80), (82, 91), (18, 91)]
 
 
@@ -365,12 +521,12 @@ def draw_piece(kind, color, size):
     return img.resize((size, size), Image.LANCZOS)
 
 
-BG = "#0f1218"
-CARD = "#1a1f29"
-CARD2 = "#242b37"
-LINE = "#2f3746"
-TEXT = "#eaeef6"
-MUTED = "#9aa4b6"
+BG = "#262421"
+CARD = "#2b2926"
+CARD2 = "#34322f"
+LINE = "#3d3b38"
+TEXT = "#e9e6e2"
+MUTED = "#a09c96"
 
 # --------------------------------------------------------------------------
 # antialiased rounded widgets (PIL renders at 4x, then LANCZOS down)
@@ -571,9 +727,6 @@ def ask_ray(provider: str, model: str, messages, timeout=45) -> str:
 
     payload = {"model": model or cfg["model"], "messages": messages,
                "temperature": 0.85, "max_tokens": 400}
-    if provider == "groq" and "gpt-oss" in payload["model"]:
-        payload["reasoning_effort"] = "low"
-        payload["max_completion_tokens"] = payload.pop("max_tokens")
 
     headers = {"Content-Type": "application/json", "Accept": "application/json",
                "User-Agent": "coach-mode/2.0"}
@@ -596,55 +749,125 @@ def ask_ray(provider: str, model: str, messages, timeout=45) -> str:
 # static coach lines
 # --------------------------------------------------------------------------
 LINES = {
-    "brilliant": ["you gave material away and it works. i'm not built for this.",
-                  "brilliant. i would not have seen that on a good day.",
-                  "a real sacrifice. i need a moment."],
-    "great": ["that's the only move that holds. impressive.",
-              "great move — everything else loses something.",
-              "the one move. you found it. rude, frankly."],
-    "best": ["that's the move. i didn't calculate it, i just agree with the engine.",
-             "best on the board. ok, show-off.",
-             "exactly what i'd have played. after checking. twice.",
-             "clean. genuinely."],
-    "excellent": ["really nice. not the engine's first pick but the same idea.",
-                  "strong. i'd shake your hand but i'm a drawing.",
-                  "that's a move i'd find ten minutes later in the shower."],
-    "good": ["fine move. not scary, not bad.", "solid. nothing to yell about.",
-             "yeah, that works. you're not losing anything."],
-    "book": ["theory. i've read a book. one book.",
-             "that's mainline. boring in a trustworthy way.",
-             "opening knowledge. the engine agrees and so does the book."],
-    "miss": ["you had a win there and let it go. sorry.",
-             "that's a miss — the tactic was right in front of you.",
+    "brilliant": ["{san} - you gave material away on {to} and it works. i am not built for this.",
+                  "brilliant. i would not have seen {san} on a good day, let alone this one.",
+                  "a real sacrifice on {to}. i need a moment."],
+    "great": ["{san} is the only move that holds. rude, frankly.",
+              "great - everything else on the board loses something.",
+              "you found the one move. i was still looking at {from}."],
+    "best": ["{san}. that is the move, and i hate how easy you made it look.",
+             "engine says {san}, i say {san}. we are not a hive mind, it just happens.",
+             "{to} is exactly where that {piece} belongs. clean.",
+             "yes. {san}. i was going to suggest it and then pretend i found it first.",
+             "best on the board. show-off. correct show-off."],
+    "excellent": ["not the top pick, but {san} keeps everything. i would have played it.",
+                  "{san} is second best and still feels like a plan.",
+                  "close to best. the engine wanted {bestSan}; you wanted {to}. same neighbourhood."],
+    "good": ["{san} is fine. not a threat, not a gift. chess.",
+             "normal move. no notes, which is rare for me.",
+             "you developed instead of panicking. growth.",
+             "{to} is a reasonable square. i would not have thought of it, but reasonable."],
+    "book": ["that is theory. i have read one book and it was this one.",
+             "{san}. book. i nod knowingly.",
+             "opening line. no rating from me, the book already voted."],
+    "miss": ["you had a win and let it go. {bestSan} was right there.",
+             "that is a miss - the tactic was on {bestTo} and you looked away.",
              "half of me wants to tell you what it was. the other half is laughing."],
-    "inaccuracy": ["hmm. not terrible, not great. there was something better.",
-                   "slight wobble. i'm no grandmaster but that's loose.",
-                   "you gave away a little something. not a disaster."],
-    "mistake": ["that one hurts a bit. there was a cleaner path.",
-                "that's a mistake. i've made four hundred tonight, so, solidarity.",
-                "you dropped real value. not fatal. probably."],
-    "blunder": ["ooh. that's a blunder. i'm sorry, i have to say it.",
-                "yeah, that's bad. like, 'not telling my friends' bad.",
-                "big one. don't panic — revert is right there."],
-    "forced": ["only move available. nothing to rate."],
+    "inaccuracy": ["{bestSan} was there. {san} is not a disaster, just a little loose.",
+                   "you left something on the table at {to}. not fatal.",
+                   "hmm. {san} gives the {piece} a job it is not qualified for."],
+    "mistake": ["that one costs you. {bestSan} first, {san} second.",
+                "that one hurts at {to}. i felt it from here.",
+                "the {piece} on {to} is not doing what you think it is doing."],
+    "blunder": ["ok. {san} is the one we do not put in the group chat. {bestSan} was right there.",
+                "that is the kind of move that loses games. {bestSan} was sitting right there.",
+                "your {piece} on {to} is asking for trouble and trouble has already said yes.",
+                "{from} to {to}? {bestSan}. please. i am begging you, {bestSan}."],
+    "forced": ["only legal move. no notes. the board chose for you.",
+               "one move available. i cannot rate a hostage situation.",
+               "forced. we move on."],
 }
+
+CAPTURE = ["took the {captured} on {to}. free-ish material, i will take it.",
+           "the {captured} is gone. one fewer problem.",
+           "nice grab on {to}. i pretend i saw it too."]
+CHECK = ["check. keep squeezing.", "that is a check and the king is having a bad day.",
+         "check on {to}. do not let him breathe."]
+CASTLE = ["castled. sensible. i was starting to worry about you.",
+          "king tucked away. now the fun part.",
+          "castling is the chess equivalent of a seatbelt."]
+PROMO = ["queened. now please do not give it back.",
+         "a new queen on {to}. that is how you end an argument.",
+         "promotion. i would like to say i saw this coming. i did not."]
+
+
+class Ray:
+    """Ray's mouth. Same line never lands twice in a row, and every line is
+    built from the move that actually happened (piece, squares, what was
+    better). No network, no key, no Groq."""
+
+    def __init__(self):
+        self._bags = {}
+        self._last = ""
+
+    def _pick(self, key, pool):
+        if not pool:
+            return ""
+        bag = self._bags.setdefault(key, [])
+        if not bag:
+            bag.extend(random.sample(range(len(pool)), len(pool)))
+        for _ in range(len(pool)):
+            line = pool[bag.pop()]
+            if line != self._last:
+                self._last = line
+                return line
+            if not bag:
+                bag.extend(random.sample(range(len(pool)), len(pool)))
+        return pool[0]
+
+    def comment(self, c):
+        cls = "forced" if c.get("only") else (c.get("cls") or "good")
+        line = self._pick(cls, LINES.get(cls) or LINES["good"])
+        for k, v in (("san", c.get("san", "that move")), ("from", c.get("from", "?")),
+                     ("to", c.get("to", "?")), ("piece", c.get("piece", "piece")),
+                     ("captured", c.get("captured") or "piece"),
+                     ("bestSan", c.get("best_san") or "something else"),
+                     ("bestTo", c.get("best_to") or c.get("to", "?")),
+                     ("loss", c.get("loss_text", "a bit"))):
+            line = line.replace("{" + k + "}", str(v))
+
+        extra = ""
+        if c.get("castle"):
+            extra = self._pick("castle", CASTLE)
+        elif c.get("captured"):
+            extra = self._pick("cap", CAPTURE)
+        if c.get("check"):
+            extra = (extra + " " if extra else "") + self._pick("check", CHECK)
+        if c.get("promo"):
+            extra = (extra + " " if extra else "") + self._pick("promo", PROMO)
+        if extra and random.random() < 0.65:
+            line = line + " " + extra.replace("{to}", str(c.get("to", "?")))
+        return line
+
+
+RAY = Ray()
 LABEL = {"brilliant": "Brilliant", "great": "Great", "best": "Best",
          "excellent": "Excellent", "good": "Good", "book": "Book",
          "inaccuracy": "Inaccuracy", "mistake": "Mistake", "miss": "Miss",
          "blunder": "Blunder", "forced": "Forced", "opp": "Their move"}
-COL = {"brilliant": "#26c2a3", "great": "#5b9bd5", "best": "#7fb14a",
-       "excellent": "#96bc4b", "good": "#8fae84", "book": "#a4835f",
-       "inaccuracy": "#f2c231", "mistake": "#e08a2e", "miss": "#e0584a",
-       "blunder": "#cf4b42", "forced": "#8a93a6", "opp": "#8a93a6"}
-GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "↑",
-         "good": "·", "book": "≡", "inaccuracy": "?!", "mistake": "?",
-         "miss": "✗", "blunder": "??", "forced": "="}
+COL = {"brilliant": "#26c2a3", "great": "#5b9bd5", "best": "#81b64c",
+       "excellent": "#95b776", "good": "#a3b98a", "book": "#a88865",
+       "inaccuracy": "#f7c045", "mistake": "#e58f2a", "miss": "#e0584a",
+       "blunder": "#ca3431", "forced": "#8b8985", "opp": "#8b8985"}
+GLYPH = {"brilliant": "!!", "great": "!", "best": "★", "excellent": "+",
+         "good": "✓", "book": "📖", "inaccuracy": "?!", "mistake": "?",
+         "miss": "✕", "blunder": "??", "forced": "="}
 
 THEMES = {
-    "green": ("#e9edd6", "#6f9250"),
-    "blue": ("#dee3ed", "#4a6fa5"),
-    "walnut": ("#e8d3b5", "#9b6a43"),
-    "slate": ("#c9cfd8", "#4a5262"),
+    "green": ("#eeeed2", "#769656"),
+    "blue": ("#dee3ed", "#4b7399"),
+    "walnut": ("#f0d9b5", "#b58863"),
+    "slate": ("#d5d8dc", "#5b6777"),
 }
 
 
@@ -781,6 +1004,40 @@ def _book_index():
 BOOK_MOVES, BOOK_NAME = _book_index()
 
 
+def _book_fen_index():
+    """FEN -> next book move, in UCI. Built once from OPENINGS by replaying the
+    lines, so a book reply is a dictionary lookup instead of a search."""
+    out = {}
+    for _name, line in OPENINGS:
+        board = chess.Board()
+        for san in line.split():
+            key = normalize_fen(board.fen())
+            try:
+                move = board.parse_san(san)
+            except ValueError:
+                break
+            out.setdefault(key, move.uci())
+            board.push(move)
+    return out
+
+
+BOOK_FEN = _book_fen_index()
+
+
+def book_move(fen: str):
+    """The theory move for this exact position, or None. Legality is checked
+    against the real board: a stale book entry must never reach the engine."""
+    uci = BOOK_FEN.get(normalize_fen(fen))
+    if not uci:
+        return None
+    board = chess.Board(fen)
+    try:
+        move = chess.Move.from_uci(uci)
+    except ValueError:
+        return None
+    return uci if move in board.legal_moves else None
+
+
 def opening_for(sans):
     """Longest known opening that matches. Needs three plies of agreement
     before it is willing to put a name on it - 1.d4 alone is not a system."""
@@ -873,8 +1130,11 @@ class CoachApp:
                 "Re-run the installer, or drop stockfish.exe in:\n"
                 + str(data_dir() / "engine") + "\n\n"
                 "Official builds: https://github.com/official-stockfish/Stockfish/releases")
-        self.engine = Engine(exe)
+        self.engine = Engine(exe, syzygy=syzygy_dir())
         self.best_cache = {}            # fen -> engine's move, precomputed
+        self.live_arrow = None          # (from_sq, to_sq) while the engine thinks
+        self._live_depth = 0
+        self._live_t = 0.0
         self._prefetch_q = queue.PriorityQueue()
         self._seq = 0
         self._queued = set()
@@ -962,7 +1222,8 @@ class CoachApp:
                         continue
                     if fen in self.best_cache:
                         continue
-                    info = self.engine.best_move(fen, 900)
+                    info = self.engine.best_move(
+                        fen, 900, on_info=lambda i: self._live_best(i, fen))
                     if info and info.get("uci"):
                         self.best_cache[fen] = info
                         if len(self.best_cache) > 200:
@@ -981,6 +1242,44 @@ class CoachApp:
                 pass
             self._queued.discard((kind, payload[0]) if kind == "best"
                                  else ("deep", id(payload[0])))
+
+    def _live_best(self, info, fen):
+        """Streaming companion to the idle best-move search: the eval bar and a
+        blue arrow move while the engine is still thinking, instead of after."""
+        if self.busy or self.reviewing or self.game_over:
+            return
+        if fen != self.board.fen():
+            return
+        depth = int(info.get("depth") or 0)
+        if depth <= self._live_depth:
+            return
+        now = time.time()
+        if now - self._live_t < 0.10:      # ~10 UI updates a second is plenty
+            return
+        self._live_t, self._live_depth = now, depth
+
+        cp, mate = info.get("white_cp"), info.get("white_mate")
+        value = cp or 0
+        if mate is not None:
+            value = 10000 - abs(mate) * 10 if mate > 0 else -10000 + abs(mate) * 10
+        uci, nps = info.get("uci"), int(info.get("nps") or 0)
+
+        def apply():
+            if fen != self.board.fen() or self.busy or self.reviewing:
+                return
+            self.last_eval = value
+            if uci and len(uci) >= 4:
+                try:
+                    self.live_arrow = (chess.parse_square(uci[:2]),
+                                       chess.parse_square(uci[2:4]))
+                except ValueError:
+                    self.live_arrow = None
+            self.engine_lbl.configure(
+                text=f"depth {depth}" + (f" · {nps // 1000}k nps" if nps else ""),
+                fg="#68718a")
+            self.render()
+
+        self.ui(apply)
 
     def build_ui(self):
         r = self.root
@@ -1512,6 +1811,12 @@ class CoachApp:
                             tags=("pc", f"sq{sq}"))
 
         self.draw_threats()
+        if self.live_arrow and not self.hint_armed and not self.game_over:
+            a, b = self.live_arrow
+            x1, y1 = self.center(a)
+            x2, y2 = self.center(b)
+            cv.create_line(x1, y1, x2, y2, fill="#6fa8dc", width=6,
+                           arrow="last", arrowshape=(14, 17, 6), tags="live")
         self.draw_user_arrows()
         self.update_evalbar()
         self.update_captures()
@@ -1761,6 +2066,8 @@ class CoachApp:
     def try_move(self, move):
         self.hint_cache = None
         self.hint_armed = False
+        self.live_arrow = None
+        self._live_depth = 0
         fen_before = self.board.fen()
         only = self.board.legal_moves.count() == 1
         san = self.board.san(move)
@@ -1876,7 +2183,9 @@ class CoachApp:
 
     def _engine_reply(self, epoch, fen):
         level = self.settings["difficulty"]
-        move = self.engine.play(fen, level, depth_for(level), budget_ms=1400)
+        move = book_move(fen) if level >= 3 else None   # 0 ms of theory
+        if not move:
+            move = self.engine.play(fen, level, depth_for(level), budget_ms=1400)
         if not move or chess.Move.from_uci(move) not in chess.Board(fen).legal_moves:
             legal = list(chess.Board(fen).legal_moves)
             move = random.choice(legal).uci() if legal else None
@@ -1906,6 +2215,8 @@ class CoachApp:
                            "color": not self.board.turn, "ep": ep})
         self.render_moves()
         self.render()
+        self.live_arrow = None
+        self._live_depth = 0
 
         def settle():
             self.busy = False
@@ -1961,35 +2272,57 @@ class CoachApp:
         except Exception:
             return None
 
+    def _streak(self, cls):
+        good = {"best", "great", "brilliant", "excellent"}
+        bad = {"blunder", "mistake", "miss"}
+        want = good if cls in good else bad if cls in bad else None
+        if not want:
+            return 0
+        n = 0
+        for r in reversed(self.stack):
+            if r.get("color") != self.player_color or not r.get("cls"):
+                continue
+            if r["cls"] in want:
+                n += 1
+            else:
+                break
+        return n
+
     def comment(self, rec):
-        """One concrete sentence, like a coach pointing at the board."""
+        """A sentence about the move that was just played, not a category."""
         cls = rec["cls"] or "good"
-        label = LABEL.get(cls, "?")
-        bits = [f"{rec['san']} — {label}."]
-        if cls in ("inaccuracy", "mistake", "miss", "blunder") and rec["loss"]:
-            bits.append(f"that's {min(rec['loss'], 1500)/100:.2f} pawns gone.")
-        better = self.best_san(rec)
-        if better and cls not in self.GOOD:
-            bits.append(f"{better} was the move.")
-        elif cls == "book":
-            name = opening_for([r["san"] for r in self.stack])
-            bits.append(f"still theory{': ' + name if name else ''}.")
-        elif cls == "brilliant":
-            bits.append("a real sacrifice, and it holds.")
-        elif cls == "great":
-            bits.append("only move that keeps it together.")
-        elif cls == "miss":
-            bits.append("a win was on the board.")
-        if random.random() < 0.35:
-            bits.append(random.choice(["i'm not a master, but that's clear.",
-                                       "chess is easy when you see it afterwards.",
-                                       "write that one down.",
-                                       "stockfish agrees with me, for once."]))
-        return " ".join(bits)
+        mv = rec["move"]
+        try:
+            board = chess.Board(rec["fen"])
+        except ValueError:
+            return f"{rec['san']}. fine."
+        piece = board.piece_at(mv.from_square)
+        captured = board.piece_at(mv.to_square)
+        if board.is_en_passant(mv):
+            captured = chess.Piece(chess.PAWN, not board.turn)
+        sign = 1 if self.player_color == chess.WHITE else -1
+        ctx = {
+            "san": rec["san"],
+            "from": chess.square_name(mv.from_square),
+            "to": chess.square_name(mv.to_square),
+            "piece": chess.piece_name(piece.piece_type) if piece else "piece",
+            "captured": chess.piece_name(captured.piece_type) if captured else None,
+            "check": board.gives_check(mv),
+            "castle": board.is_castling(mv),
+            "promo": bool(mv.promotion),
+            "cls": cls,
+            "only": rec.get("only"),
+            "loss": rec.get("loss") or 0,
+            "loss_text": f"{min(rec.get('loss') or 0, 1500) / 100:.2f}",
+            "best_san": self.best_san(rec),
+            "best_to": (rec.get("best") or "")[2:4] or None,
+            "streak": self._streak(cls),
+        }
+        return RAY.comment(ctx)
 
     def set_rating(self, cls, loss):
-        self.chip.configure(text=LABEL.get(cls, "?"), bg=COL.get(cls, "#2a3040"),
-                            fg="#0d1117")
+        self.chip.configure(text=GLYPH.get(cls, "?"), bg=COL.get(cls, "#3b3936"),
+                            fg="#ffffff")
         notes = {"brilliant": "sacrifice, and it works",
                  "great": "only move that held",
                  "best": "engine's top choice",
@@ -2001,7 +2334,7 @@ class CoachApp:
         if cls in notes:
             txt = notes[cls]
         else:
-            txt = f"cost you {min(loss, 1500)/100:.2f} pawns"
+            txt = f"-{min(loss, 1500) / 100:.1f}"
         self.rate_lbl.configure(text=txt)
 
     def end_game(self):
@@ -2188,7 +2521,7 @@ class CoachApp:
         elif rec["loss"] >= 9000:
             cost = " · mate allowed"
         else:
-            cost = f" · {min(rec['loss'], 1500)/100:.2f} pawns"
+            cost = f"  -{min(rec['loss'], 1500) / 100:.1f}"
         return f"{num}{dots} {rec['san']} — {label}{cost}"
 
     def review_line(self, rec):
@@ -2313,6 +2646,9 @@ class CoachApp:
 
         threading.Thread(target=boot, daemon=True).start()
         self.best_cache.clear()
+        self.engine.new_game()
+        self.live_arrow = None
+        self._live_depth = 0
         self._queued.clear()
         self.hint_info = None
         self.schedule_prefetch()
@@ -2379,6 +2715,14 @@ class CoachApp:
             self.hint_cache = None
             return
         fen = self.board.fen()
+        book = book_move(fen)
+        if book:
+            self._show_hint(book, fen)
+            move = chess.Move.from_uci(book)
+            name = opening_for([r["san"] for r in self.stack]) or "opening theory"
+            self.say(f"book — {name}. look at your piece on "
+                     f"{chess.square_name(move.from_square)}. press hint again to name it.")
+            return
         cached = self.best_cache.get(fen)
         if cached and cached.get("uci"):
             self.hint_info = dict(cached, fen=fen)
@@ -2604,8 +2948,7 @@ class CoachApp:
                     better = f" {snap['mine_best'] and san_of(snap['mine_best'])} was the move."
                 except Exception:
                     better = ""
-            cost = (f" it cost {min(snap['mine_loss'], 1500) / 100:.2f} pawns."
-                    if snap["mine_loss"] else "")
+            cost = " that one hurts." if snap["mine_loss"] else ""
             return f"your {snap['mine_san']} graded {LABEL.get(cls, cls)}.{cost}{better}"
 
         if re.search(r"\b(opening|gambit|theory|line)\b", t):
