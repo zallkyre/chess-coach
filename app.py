@@ -23,6 +23,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 import chess
+import chess.pgn
 import tkinter as tk
 from tkinter import ttk, messagebox
 from PIL import Image, ImageDraw, ImageOps, ImageTk
@@ -1403,6 +1404,7 @@ class CoachApp:
         self.side_btns = {}
         for key, text, cmd in (("lock", "LOCK", self.toggle_lock),
                                ("fen", "FEN", self.copy_fen),
+                               ("pgn", "PGN", self.copy_pgn),
                                ("clear", "CLR", self.clear_arrows),
                                ("bots", "BOTS", self.bot_toggle),
                                ("theme", "GREEN", self.cycle_theme),
@@ -1412,6 +1414,31 @@ class CoachApp:
                             font=("Consolas", 7, "bold"), bg=BG)
             b.pack(fill="x", pady=(0, 6))
             self.side_btns[key] = b
+
+    def copy_pgn(self):
+        """Copy the whole game as PGN, the format lichess, chess.com and every
+        coach expect - the FEN button only ever copied one position."""
+        if not self.stack:
+            self.say("nothing to export yet. make a move first.")
+            return
+        try:
+            game = chess.pgn.Game()
+            game.headers["Event"] = APP
+            you, ray = ("You", "Ray") if self.player_color == chess.WHITE else ("Ray", "You")
+            game.headers["White"], game.headers["Black"] = you, ray
+            node = game
+            for rec in self.stack:
+                node = node.add_variation(rec["move"])
+            text = str(game)
+        except Exception:
+            traceback.print_exc()
+            self.say("couldn't build the pgn. that one's on me.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.side_btns["pgn"].configure(text="COPIED", bg="#7ec96b", fg="#0d1117")
+        self.root.after(900, self._sync_side_buttons)
+        self.say("game copied as PGN. paste it into lichess, or send it to someone who cares.")
 
     def clear_arrows(self):
         self.user_arrows = []
@@ -1429,6 +1456,9 @@ class CoachApp:
         fen = self.side_btns["fen"]
         if fen.cget("text") != "COPIED":
             fen.configure(text="FEN", bg=CARD2, fg=TEXT)
+        pgn = self.side_btns.get("pgn")
+        if pgn is not None and pgn.cget("text") != "COPIED":
+            pgn.configure(text="PGN", bg=CARD2, fg=TEXT)
         self.side_btns["theme"].configure(
             text=str(self.settings.get("theme", "green")).upper()[:6],
             bg=CARD2, fg=TEXT)
@@ -2812,7 +2842,9 @@ class CoachApp:
             self.review_mode = False
             self.review_bar.pack_forget()
         if self.busy:
-            return
+            # the engine is still grading or thinking: retire that work instead
+            # of refusing the button. every worker checks epoch and drops out.
+            self.epoch += 1
         # walk back over the opponent's reply first, then your own move, so the
         # board always comes back on your turn instead of theirs
         while self.stack and self.stack[-1]["color"] != self.player_color:
@@ -2825,6 +2857,7 @@ class CoachApp:
         self.reviewing = False
         self.busy = False
         self.selected = None
+        self.board_badge = None
         self.hint_cache = None
         self.hint_armed = False
         self.hint_info = None
