@@ -58,12 +58,6 @@ def depth_for(level: int) -> int:
     return 13
 
 
-def random_chance(level: int) -> float:
-    """How often the opponent just plays a random legal move."""
-    table = {1: 0.50, 2: 0.40, 3: 0.30, 4: 0.20, 5: 0.14, 6: 0.10,
-             7: 0.07, 8: 0.05, 9: 0.04, 10: 0.03, 11: 0.02, 12: 0.01}
-    return table.get(level, 0.0)
-
 
 # --------------------------------------------------------------------------
 # paths
@@ -249,10 +243,14 @@ class Engine:
             self.grades.popitem(last=False)
 
     def new_game(self):
-        """Reset the engine's own search state; our cache survives on purpose."""
-        self.send("ucinewgame")
-        self.send("isready")
-        self.wait(lambda l: l == "readyok", 5)
+        """Reset the engine's own search state; our cache survives on purpose.
+
+        Holding the lock matters: a worker mid-_search() owns the line queue,
+        and an unguarded isready here would eat its bestmove."""
+        with self.lock:
+            self.send("ucinewgame")
+            self.send("isready")
+            self.wait(lambda l: l == "readyok", 5)
 
     def _search(self, fen: str, depth=None, timeout=12.0, moves=None,
                 multipv=1, movetime=None, on_info=None):
@@ -284,6 +282,11 @@ class Engine:
                 except queue.Empty:
                     break
                 if line.startswith("info"):
+                    # aspiration fail-high/low: tentative score, one-move pv
+                    if " upperbound" in line or " lowerbound" in line:
+                        continue
+                    if " currmove " in line:
+                        continue
                     m = re.search(r"score (cp|mate) (-?\d+)", line)
                     if not m:
                         continue
@@ -474,14 +477,18 @@ class Engine:
             return False
 
     def restart(self) -> bool:
-        """Replace a dead engine with a fresh one, keeping the cached scores."""
+        """Replace a dead engine with a fresh one, keeping the cached scores.
+
+        Only the process and its line queue are swapped, and only while holding
+        the lock, so a worker that is inside _search() finishes against the old
+        pipe instead of finding a different Lock object underneath it."""
         self.close()
         try:
             fresh = Engine(Path(self.path), syzygy=self.syzygy)
         except Exception:
             return False
-        # only the live plumbing is swapped; the score caches survive
-        self.p, self.q, self.lock = fresh.p, fresh.q, fresh.lock
+        with self.lock:
+            self.p, self.q = fresh.p, fresh.q
         return True
     def close(self):
         try:
@@ -507,6 +514,13 @@ class Engine:
                 stream.close()
             except Exception:
                 pass
+        # wake anyone blocked in _search(): a closed pipe puts no sentinel on
+        # the queue, so the reader thread just exits and the waiter would sit
+        # out its whole timeout otherwise
+        try:
+            self.q.put("bestmove 0000")
+        except Exception:
+            pass
 
 
 
@@ -678,6 +692,8 @@ class RoundButton(tk.Canvas):
         for key, attr in (("text", "_text"), ("fg", "_fg"), ("bg", "_fill")):
             if key in kw:
                 setattr(self, attr, kw.pop(key))
+                if key == "bg":
+                    self._bhover = mix_color(self._fill, "#ffffff", 0.07)
                 if key == "text":
                     self._icon = None      # words and a badge never share the chip
                 dirty = True
@@ -687,7 +703,7 @@ class RoundButton(tk.Canvas):
             dirty = True
         if "state" in kw:
             self._enabled = kw.pop("state") != "disabled"
-            self.configure(cursor="hand2" if self._enabled else "arrow")
+            super().configure(cursor="hand2" if self._enabled else "arrow")
             dirty = True
         if "command" in kw:
             self._command = kw.pop("command")
@@ -790,6 +806,13 @@ def ask_ray(provider: str, model: str, messages, timeout=45) -> str:
 
     payload = {"model": model or cfg["model"], "messages": messages,
                "temperature": 0.85, "max_tokens": 400}
+    # gpt-oss thinks out loud and can spend the whole budget before writing a
+    # word, which arrives as content: null. Same rule as proxy.py: the model
+    # decides, not the provider.
+    if "gpt-oss" in str(payload["model"]):
+        payload["reasoning_effort"] = "low"
+        if provider in ("groq", "openrouter"):
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
 
     headers = {"Content-Type": "application/json", "Accept": "application/json",
                "User-Agent": "coach-mode/2.0"}
@@ -801,8 +824,10 @@ def ask_ray(provider: str, model: str, messages, timeout=45) -> str:
                                  headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read())
-    msg = data["choices"][0]["message"]
+    msg = data["choices"][0]["message"] or {}
     out = (msg.get("content") or "").strip()
+    if not out and msg.get("reasoning"):
+        raise RuntimeError("the model only produced reasoning; try a smaller model")
     if not out:
         raise RuntimeError("empty reply")
     return out
@@ -978,7 +1003,7 @@ def is_sacrifice(board: chess.Board, move: chess.Move) -> bool:
         gain = PIECE_VALUE.get(victim.piece_type, 1) if victim else 1
     if move.promotion:
         gain += PIECE_VALUE.get(move.promotion, 0) - 1
-    if PIECE_VALUE.get(piece.piece_type, 0) - gain < 2:
+    if PIECE_VALUE.get(piece.piece_type, 0) - gain < 1:
         return False
     after = board.copy()
     after.push(move)
@@ -1092,7 +1117,9 @@ def _book_fen_index():
                 move = board.parse_san(san)
             except ValueError:
                 break
-            out.setdefault(key, move.uci())
+            out.setdefault(key, [])
+            if move.uci() not in out[key]:
+                out[key].append(move.uci())
             board.push(move)
     return out
 
@@ -1101,17 +1128,22 @@ BOOK_FEN = _book_fen_index()
 
 
 def book_move(fen: str):
-    """The theory move for this exact position, or None. Legality is checked
-    against the real board: a stale book entry must never reach the engine."""
-    uci = BOOK_FEN.get(normalize_fen(fen))
-    if not uci:
+    """A theory move here, picked among every variation that reaches this
+    position. Legality is checked against the real board."""
+    moves = BOOK_FEN.get(normalize_fen(fen))
+    if not moves:
         return None
     board = chess.Board(fen)
-    try:
-        move = chess.Move.from_uci(uci)
-    except ValueError:
+    legal = []
+    for uci in moves:
+        try:
+            if chess.Move.from_uci(uci) in board.legal_moves:
+                legal.append(uci)
+        except ValueError:
+            continue
+    if not legal:
         return None
-    return uci if move in board.legal_moves else None
+    return random.choice(legal)
 
 
 def opening_for(sans):
@@ -1152,7 +1184,7 @@ def grade_move(loss, is_best, gap, best_cp, played_cp, best_mate, sac, book, onl
         return "forced"
     if book:
         return "book"
-    had_win = (best_mate is not None and best_mate > 0) or best_cp >= 200
+    had_win = (best_mate is not None and best_mate > 0) or best_cp >= 500
     if had_win and not is_best and played_cp < 50:
         return "miss"
     if is_best:
@@ -1205,7 +1237,6 @@ class CoachApp:
         self._auto_job = None
         self.hint_cache = None
         self.hint_armed = False
-        self.threat_arrows = []
         self.user_arrows = []          # right-drag arrows, survive every move
         self.user_marks = []           # red square marks
         self.chat_log = []
@@ -1282,7 +1313,7 @@ class CoachApp:
 
     def _watch_think(self):
         """A search that never comes back must not leave "thinking" on screen
-        forever. After 18 s the board is released, and a dead engine is
+        forever. After THINK_TIMEOUT the board is released, and a dead engine is
         restarted in the background so the next move still works."""
         if not self.busy:
             self._think_started = 0.0
@@ -1295,6 +1326,7 @@ class CoachApp:
             return
         self._think_started = 0.0
         self.busy = False
+        self.epoch += 1      # whatever the stalled search returns is stale now
         try:
             self.engine_lbl.configure(text="engine stalled", fg="#ca3431")
         except Exception:
@@ -1578,6 +1610,11 @@ class CoachApp:
             text=str(self.settings.get("theme", "green")).upper()[:6],
             bg=CARD2, fg=TEXT)
         self.side_btns["full"].configure(text="FULL", bg=CARD2, fg=TEXT)
+        bots = self.side_btns.get("bots")
+        if bots is not None:
+            active = bool(getattr(self, "bot_mode", False))
+            bots.configure(text="BOTS", bg="#7ec96b" if active else CARD2,
+                           fg="#0d1117" if active else TEXT)
 
     def toggle_lock(self):
         """Pin the window above everything else until the button is pressed again."""
@@ -2291,7 +2328,7 @@ class CoachApp:
         rowb.pack(padx=12, pady=(0, 12))
         for pt, name in ((chess.QUEEN, "q"), (chess.ROOK, "r"),
                          (chess.BISHOP, "b"), (chess.KNIGHT, "n")):
-            img = self.piece_photo(name, "w", 48)
+            img = self.piece_photo(name, "w" if self.player_color == chess.WHITE else "b", 48)
             b = tk.Button(rowb, image=img, bg="#e9edd6", relief="flat", bd=0,
                           cursor="hand2", padx=4, pady=4,
                           command=lambda p=pt: (choice.update(v=p), win.destroy()))
@@ -2405,7 +2442,6 @@ class CoachApp:
         self.last_eval = cp_white
         rec["cls"] = cls
         rec["loss"] = loss
-        rec["deep"] = {"cls": cls, "loss": loss, "best": rec.get("best")}
         if rec.get("best"):
             self.best_cache.setdefault(rec["fen"], {"uci": rec["best"]})
         self.set_rating(cls, loss)
@@ -2837,19 +2873,6 @@ class CoachApp:
         if rec["cls"] is not None:
             base = self.comment(rec)
             return base if mine else "ray: " + base
-        note = {"brilliant": "a sacrifice that works.",
-                "great": "the only move that held.",
-                "best": "engine's pick.",
-                "excellent": "nearly the top move.",
-                "good": "playable, a bit of value left on the table.",
-                "book": "opening theory. mainline stuff.",
-                "miss": "a win was there and it slipped away.",
-                "inaccuracy": "slight wobble. something better existed.",
-                "mistake": "that cost real value.",
-                "blunder": "big drop. arrow shows the move that was there.",
-                "forced": "only legal move. nothing to grade."}.get(rec["cls"], "")
-        who = "" if mine else "ray: "
-        return f"{who}{rec['san']} — {LABEL.get(rec['cls'], '?')}. {note}"
 
     def review_arrow(self, rec):
         """Show the engine's move when the one played was not it."""
@@ -2946,7 +2969,12 @@ class CoachApp:
         self.say("your move. i'm not a pro, i'm just loud.")
 
         def boot():
+            # capture the game generation: a move played while this depth-12
+            # search runs makes its eval stale, and stale evals are worse than none
+            era = self.epoch
             cp, _, _ = self.engine.analyze(self.board.fen(), 12)
+            if era != self.epoch:
+                return
             self.pre_eval = cp
             self.ui(lambda: self._set_eval(cp))
 
@@ -3011,7 +3039,10 @@ class CoachApp:
         threading.Thread(target=self._rebase, daemon=True).start()
 
     def _rebase(self):
+        era = self.epoch
         cp, _, _ = self.engine.analyze(self.board.fen(), 12)
+        if era != self.epoch:
+            return
         self.pre_eval = cp if self.player_color == chess.WHITE else -cp
         self.ui(lambda: self._set_eval(cp))
 
@@ -3099,8 +3130,14 @@ class CoachApp:
                  ("who",) if who == "ray" else ("me",))
         t.insert("end", text + "\n", ("body",) if who != "dim" else ("dim",))
         # keep the buffer small: a long game would otherwise grow forever
-        if int(t.index("end-1c").split(".")[0]) > 240:
-            t.delete("1.0", "40.0")
+        lines = int(t.index("end-1c").split(".")[0])
+        if lines > 600:
+            target = max(1, lines - 400)
+            try:
+                hit = t.search(r"^(Ray|You)", "%d.0" % target, "end", regexp=True)
+            except Exception:
+                hit = ""
+            t.delete("1.0", hit or "%d.0" % target)
         t.see("end")
         t.configure(state="disabled")
 
@@ -3172,10 +3209,23 @@ class CoachApp:
         self.game_over = False
         self.reviewing = False
         self.selected = None
+        # a rewind ends the previous line of play: clear what described it
+        self.epoch += 1
+        self.busy = False
+        self.board_badge = None
+        self.hint_cache = None
+        self.hint_armed = False
+        self.hint_info = None
+        self.live_arrow = None
+        self._live_depth = 0
+        self.canvas.delete("hint")
+        self.canvas.delete("rev")
+        self.canvas.delete("slide")
         self.set_analyze_state()
         self.say("rewound. no judgement. okay, maybe a little.")
         self.render_moves()
         self.render()
+        self.schedule_prefetch()
         threading.Thread(target=self._rebase, daemon=True).start()
 
     # ---------------- chat ----------------
@@ -3216,6 +3266,7 @@ class CoachApp:
                 "mine_cls": mine["cls"] if mine else None,
                 "mine_loss": mine["loss"] if mine else 0,
                 "mine_best": mine.get("best") if mine else None,
+                "mine_fen": mine["fen"] if mine else None,
                 "acc": self.accuracy(),
                 "difficulty": self.settings["difficulty"],
                 "turn": "you" if self.board.turn == self.player_color else "ray"}
@@ -3224,79 +3275,7 @@ class CoachApp:
     # ---------------- built-in coach (no key, no network) ----------------
     def local_brain(self, text, snap):
         """Ray without an API: reads the position and answers from it."""
-        t = text.lower().strip()
-        board = chess.Board(snap["fen"])
-        opening = opening_for(snap["sans"])
-        ev = fmt_eval(snap["eval"])
-
-        def san_of(uci):
-            try:
-                return board.san(chess.Move.from_uci(uci))
-            except Exception:
-                return uci
-
-        if re.search(r"\b(hint|best|play|move|what should|suggest)\b", t):
-            hint = self.engine.best_move(snap["fen"], 2200)
-            best = (hint or {}).get("uci")
-            if not best:
-                return "no legal move worth suggesting. that's a first."
-            mv = chess.Move.from_uci(best)
-            piece = board.piece_at(mv.from_square)
-            name = chess.piece_name(piece.piece_type) if piece else "piece"
-            why = ("it just wins material." if board.is_capture(mv)
-                   else "it keeps the position honest.")
-            return (f"{san_of(best)} — move the {name} from "
-                    f"{chess.square_name(mv.from_square)}. {why} eval is {ev}.")
-
-        if re.search(r"\b(threat\w*|danger\w*|attack\w*|hanging|safe)\b", t):
-            enemy = not self.player_color
-            probe = board.copy(stack=False)
-            probe.turn = enemy
-            worst, target = None, None
-            for sq in chess.SQUARES:
-                p = probe.piece_at(sq)
-                if not p or p.color != enemy:
-                    continue
-                for tgt in probe.attacks(sq):
-                    v = board.piece_at(tgt)
-                    if v and v.color == self.player_color:
-                        if worst is None or PIECE_VALUE.get(v.piece_type, 0) > worst:
-                            worst, target = PIECE_VALUE.get(v.piece_type, 0), tgt
-            if target is None:
-                return "nothing is hanging right now. that's the good news."
-            victim = board.piece_at(target)
-            return (f"your {chess.piece_name(victim.piece_type)} on "
-                    f"{chess.square_name(target)} is attacked. deal with it or lose it.")
-
-        if re.search(r"\b(why|bad|blunder|mistake|wrong|miss)\b", t) and snap.get("mine_san"):
-            cls = snap["mine_cls"] or "move"
-            better = ""
-            if snap.get("mine_best"):
-                try:
-                    better = f" {snap['mine_best'] and san_of(snap['mine_best'])} was the move."
-                except Exception:
-                    better = ""
-            cost = " that one hurts." if snap["mine_loss"] else ""
-            return f"your {snap['mine_san']} graded {LABEL.get(cls, cls)}.{cost}{better}"
-
-        if re.search(r"\b(opening|gambit|theory|line)\b", t):
-            if opening:
-                tag = " that's a gambit." if "Gambit" in opening else ""
-                return f"you're in the {opening}.{tag} eval {ev}."
-            return f"no theory line yet — free-form chess. eval {ev}."
-
-        if re.search(r"\b(eval|score|winning|losing|better|who)\b", t):
-            side = "you're" if (snap["eval"] > 0) == (self.player_color == chess.WHITE) else "ray is"
-            return f"eval {ev}, so {side} on top. roughly."
-
-        acc = snap["acc"]
-        review = ""
-        if snap["last_san"]:
-            review = f" last one graded {LABEL.get(snap['last_cls'] or 'move', '?')}."
-        tail = f" you're on {acc}% tonight." if acc is not None else ""
-        opener = random.choice([
-            "still here. position says", "short version:", "let's keep it simple:"])
-        return f"{opener} eval {ev}.{review}{tail}"
+        return local_reply(text, snap, self.engine, self.player_color)
 
     def _chat_work(self, text, snap):
         prov = self.settings["provider"]
@@ -3463,6 +3442,7 @@ class CoachApp:
         self.chip.configure(text="bots", bg="#5b9bd5", fg="#0d1117")
         self.rate_lbl.configure(text=f"white {white_level} vs black {black_level}")
         self.say("no humans. white is level " f"{white_level}, black is level {black_level}.")
+        self._sync_side_buttons()
         self.root.after(400, self.bot_tick)
 
     def stop_bots(self):
@@ -3476,6 +3456,7 @@ class CoachApp:
         self.chip.configure(text="ready", bg="#2a3040", fg="#aab3c4")
         self.rate_lbl.configure(text="bots stopped")
         self.say("bots off. back to you, i suppose.")
+        self._sync_side_buttons()
 
     def bot_tick(self):
         self.bot_job = None
@@ -3641,6 +3622,93 @@ class CoachApp:
         finally:
             self.root.destroy()
 
+
+def local_reply(text, snap, engine=None, player_color=chess.WHITE):
+    """Ray without a key or a network: reads the position and answers from it.
+
+    Shared by the Tk app and the Qt build, so the coach is never silent just
+    because no provider is configured."""
+    t = (text or "").lower().strip()
+    try:
+        board = chess.Board(snap.get("fen") or chess.STARTING_FEN)
+    except Exception:
+        board = chess.Board()
+    ev = fmt_eval(snap.get("eval") or 0)
+
+    def san_of(uci, pos=None):
+        try:
+            return (pos or board).san(chess.Move.from_uci(uci))
+        except Exception:
+            return uci
+
+    if re.search(r"\b(hint|best|play|move|what should|suggest)\b", t):
+        hint = None
+        if engine is not None:
+            try:
+                hint = engine.best_move(snap["fen"], 2200)
+            except Exception:
+                hint = None
+        best = (hint or {}).get("uci")
+        if not best:
+            legal = list(board.legal_moves)
+            if not legal:
+                return "no legal move worth suggesting. that's a first."
+            return f"i have no engine right now. try {board.san(legal[0])}."
+        mv = chess.Move.from_uci(best)
+        piece = board.piece_at(mv.from_square)
+        name = chess.piece_name(piece.piece_type) if piece else "piece"
+        why = ("it just wins material." if board.is_capture(mv)
+               else "it keeps the position honest.")
+        return (f"{san_of(best)} - move the {name} from "
+                f"{chess.square_name(mv.from_square)}. {why} eval is {ev}.")
+
+    if re.search(r"\b(threat|danger|attack|hanging|safe)\b", t):
+        enemy = not player_color
+        probe = board.copy(stack=False)
+        probe.turn = enemy
+        worst, target = None, None
+        for sq in chess.SQUARES:
+            p = probe.piece_at(sq)
+            if not p or p.color != enemy:
+                continue
+            for tgt in probe.attacks(sq):
+                v = board.piece_at(tgt)
+                if v and v.color == player_color:
+                    score = PIECE_VALUE.get(v.piece_type, 0)
+                    if worst is None or score > worst:
+                        worst, target = score, tgt
+        if target is None:
+            return "nothing is hanging right now. that's the good news."
+        victim = board.piece_at(target)
+        return (f"your {chess.piece_name(victim.piece_type)} on "
+                f"{chess.square_name(target)} is attacked. deal with it or lose it.")
+
+    if re.search(r"\b(why|bad|blunder|mistake|wrong|miss)\b", t) and snap.get("mine_san"):
+        cls = snap.get("mine_cls") or "move"
+        better = ""
+        if snap.get("mine_best") and snap.get("mine_fen"):
+            try:
+                was = chess.Board(snap["mine_fen"])
+                better = " " + was.san(chess.Move.from_uci(snap["mine_best"])) + " was the move."
+            except Exception:
+                better = ""
+        elif snap.get("mine_best"):
+            better = " " + san_of(snap["mine_best"]) + " was the move."
+        cost = " that one hurts." if snap.get("mine_loss") else ""
+        return f"your {snap['mine_san']} graded {LABEL.get(cls, cls)}.{cost}{better}"
+
+    opening = opening_for(snap.get("sans") or [])
+    if re.search(r"\b(opening|gambit|theory|line)\b", t):
+        if opening:
+            tag = " that's a gambit." if "Gambit" in opening else ""
+            return f"you're in the {opening}.{tag} eval {ev}."
+        return "no theory name for this yet. you are on your own in the wilderness."
+
+    if re.search(r"\b(hi|hey|hello|yo|sup)\b", t) or re.fullmatch(r"ray[!.?]*", t):
+        return f"hey. {ev} on the board. what are we doing?"
+
+    return (f"{ev}. play something and i will have a real opinion. "
+            f"ask me about threats, the opening, or your last move.")
 
 def main():
     try:

@@ -342,6 +342,29 @@ var Chess = function(fen) {
       return { valid: false, error_number: 11, error: errors[11] }
     }
 
+    /* 12th criterion: exactly one king each, and they are not adjacent.
+       Without this, generate_moves() and the engine both misbehave. */
+    var kings = { w: [], b: [] }
+    for (var r = 0; r < 8; r++) {
+      var file = 0
+      for (var c = 0; c < rows[r].length; c++) {
+        var ch = rows[r][c]
+        if (ch >= '1' && ch <= '8') { file += parseInt(ch, 10); continue }
+        if (ch == 'K') kings.w.push([file, 7 - r])
+        else if (ch == 'k') kings.b.push([file, 7 - r])
+        file++
+      }
+    }
+    if (kings.w.length !== 1 || kings.b.length !== 1) {
+      return { valid: false, error_number: 12, error: 'there must be exactly one king per side' }
+    }
+    if (
+      Math.abs(kings.w[0][0] - kings.b[0][0]) <= 1 &&
+      Math.abs(kings.w[0][1] - kings.b[0][1]) <= 1
+    ) {
+      return { valid: false, error_number: 12, error: 'kings cannot be adjacent' }
+    }
+
     /* everything's okay! */
     return { valid: true, error_number: 0, error: errors[0] }
   }
@@ -444,6 +467,12 @@ var Chess = function(fen) {
 
     /* check for valid square */
     if (!(square in SQUARES)) {
+      return false
+    }
+
+    /* pawns cannot stand on the first or last rank: generate_moves() would
+       index off the board and could never move them anyway */
+    if (piece.type == PAWN && (rank(square) === 0 || rank(square) === 7)) {
       return false
     }
 
@@ -812,8 +841,13 @@ var Chess = function(fen) {
       (pieces[BISHOP] === 1 || pieces[KNIGHT] === 1)
     ) {
       return true
-    } else if (num_pieces === pieces[BISHOP] + 2) {
-      /* kb vs. kb where any number of bishops are all on the same color */
+    } else if (
+      /* kb vs. kb where every bishop is on the same colour, and it is exactly
+         one bishop per side. two same-coloured bishops on one side is not a
+         dead position: mate is still constructible with help. */
+      num_pieces === pieces[BISHOP] + 2 &&
+      pieces[BISHOP] === 2
+    ) {
       var sum = 0
       var len = bishops.length
       for (var i = 0; i < len; i++) {
@@ -918,7 +952,7 @@ var Chess = function(fen) {
       }
 
       /* turn off castling */
-      castling[us] = ''
+      castling[us] = 0
     }
 
     /* turn off castling if we move a rook */
@@ -1197,7 +1231,7 @@ var Chess = function(fen) {
     var dupe = obj instanceof Array ? [] : {}
 
     for (var property in obj) {
-      if (typeof property === 'object') {
+      if (typeof obj[property] === 'object' && obj[property] !== null) {
         dupe[property] = clone(obj[property])
       } else {
         dupe[property] = obj[property]
@@ -1477,7 +1511,7 @@ var Chess = function(fen) {
           : false
 
       function mask(str) {
-        return str.replace(/\\/g, '\\')
+        return str.replace(/\\/g, '\\\\')
       }
 
       function has_keys(object) {
@@ -1499,7 +1533,7 @@ var Chess = function(fen) {
         var value = ''
 
         for (var i = 0; i < headers.length; i++) {
-          key = headers[i].replace(/^\[([A-Z][A-Za-z]*)\s.*\]$/, '$1')
+          key = headers[i].replace(/^\[([A-Za-z][A-Za-z0-9_-]*)\s.*\]$/, '$1')
           value = headers[i].replace(/^\[[A-Za-z]+\s"(.*)"\]$/, '$1')
           if (trim(key).length > 0) {
             header_obj[key] = value

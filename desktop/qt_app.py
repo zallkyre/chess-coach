@@ -175,6 +175,7 @@ class Bridge(QObject):
     hinted = Signal(object)     # best_move() result
     evaluated = Signal(object)  # idle baseline eval
     failed = Signal(str)
+    chat = Signal(str)
 
 
 BRIDGE = Bridge()
@@ -322,12 +323,18 @@ class Board(QWidget):
         if key not in self.pix:
             kind = piece.symbol().lower()
             color = "w" if piece.color else "b"
+            # rasterise large and shrink: the SVG at its final size aliases badly
+            big = max(64, int(size * 2))
             r = QSvgRenderer(svg_for(kind, color))
-            pm = QPixmap(int(size), int(size))
+            pm = QPixmap(big, big)
             pm.fill(Qt.transparent)
             p = QPainter(pm)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
             r.render(p)
             p.end()
+            pm = pm.scaled(int(size), int(size), Qt.KeepAspectRatio,
+                           Qt.SmoothTransformation)
             self.pix[key] = pm
         return self.pix[key]
 
@@ -503,7 +510,19 @@ class Board(QWidget):
             self._rpress = self.at(e.position().x(), e.position().y())
             return
         self._moved = False
-        self._press = self.at(e.position().x(), e.position().y())
+        sq = self.at(e.position().x(), e.position().y())
+        # click-to-move: a second click on a legal destination plays it
+        if (sq is not None and self.selected is not None and sq != self.selected
+                and any(m.to_square == sq for m in self.legal)):
+            src = self.selected
+            self.selected = None
+            self.legal = []
+            self._press = None
+            self.last_drag = False
+            self.update()
+            self.clicked.emit(src, sq)
+            return
+        self._press = sq
         if self._press is not None:
             piece = self.board.piece_at(self._press)
             if piece is not None and piece.color == self.player_color:
@@ -828,6 +847,7 @@ class Window(QMainWindow):
         lay.addLayout(right)
 
         BRIDGE.graded.connect(self.after_grade)
+        BRIDGE.chat.connect(self.say_text)
         BRIDGE.replied.connect(self.after_reply)
         BRIDGE.hinted.connect(self.after_hint)
         BRIDGE.evaluated.connect(self.after_baseline)
@@ -1068,7 +1088,14 @@ class Window(QMainWindow):
         uci = core.book_move(self.board.fen()) if level >= 3 else None
         if not uci:
             uci = self.engine.play(self.board.fen(), level,
-                                   core.depth_for(level), budget_ms=1200)
+                                   core.depth_for(level),
+                                   budget_ms=1400 + min(20, level) * 45)
+        # nothing answers in 40 ms in a real game; a short human pause also
+        # keeps the board readable between your move and his
+        think = 0.45 + random.random() * 0.85
+        if level >= 12:
+            think += 0.35
+        time.sleep(think)
         BRIDGE.replied.emit(uci)
 
     def after_grade(self, rec):
@@ -1259,27 +1286,44 @@ class Window(QMainWindow):
         if not text:
             return
         self.entry.clear()
-        low = text.lower()
-        if "hint" in low:
-            self.hint()
-            return
-        if "why" in low or "explain" in low:
-            self.say_text("stockfish says so and it has never once been polite about it.")
-            return
-        if low.startswith(("hi", "hey", "hello", "yo")):
-            self.say_text(f"hey. {core.fmt_eval(self.last_eval)} on the board. let's play.")
-            return
-        if "undo" in low or "take back" in low:
-            self.say_text("hit revert. i won't tell anyone.")
-            return
-        if "accuracy" in low or "rating" in low or "elo" in low:
-            self.say_text("elo is a lie. play a few moves and i'll tell you about accuracy.")
-            return
-        self.say_text("i only know chess and your mistakes. mostly your mistakes.")
+        snap = self._snap()
+        threading.Thread(target=self._chat_worker, args=(text, snap), daemon=True).start()
+
+    def _snap(self):
+        mine = next((r for r in reversed(self.stack)
+                     if r["color"] == self.player_color), None)
+        last = self.stack[-1] if self.stack else None
+        return {
+            "fen": self.board.fen(),
+            "sans": [r["san"] for r in self.stack],
+            "eval": self.last_eval,
+            "last_san": last["san"] if last else None,
+            "last_cls": last["cls"] if last else None,
+            "last_loss": last["loss"] if last else 0,
+            "last_best": last.get("best") if last else None,
+            "mine_san": mine["san"] if mine else None,
+            "mine_cls": mine["cls"] if mine else None,
+            "mine_loss": mine["loss"] if mine else 0,
+            "mine_best": mine.get("best") if mine else None,
+            "mine_fen": mine["fen"] if mine else None,
+            "acc": None,
+            "difficulty": self.difficulty(),
+            "turn": "you" if self.board.turn == self.player_color else "ray",
+        }
+
+    def _chat_worker(self, text, snap):
+        try:
+            reply = core.local_reply(text, snap, self.engine, self.player_color)
+        except Exception as exc:
+            reply = "i broke: " + str(exc)
+        BRIDGE.chat.emit(reply)
 
 
 # --------------------------------------------------------------------------
 def main():
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     exe = core.engine_path()
     if exe is None:
         app = QApplication(sys.argv)

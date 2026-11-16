@@ -93,15 +93,44 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _body(self):
-        length = int(self.headers.get("Content-Length", "0"))
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length < 0 or length > 64 * 1024:
+            raise ValueError("body too large")
         return json.loads(self.rfile.read(length) or b"{}")
 
     def _local_only(self) -> bool:
+        """Reject cross-origin posts and DNS-rebinding hosts."""
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host:
+            return False
+        name = host.rsplit(":", 1)[0] if not host.endswith("]") else host
+        if name not in ("127.0.0.1", "localhost", "[::1]"):
+            return False
         origin = self.headers.get("Origin", "")
-        return not origin or origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")
+        if not origin:
+            return True
+        return origin.startswith(("http://127.0.0.1", "http://localhost"))
+
+    # Only these are served: the app shell and its two asset trees. Everything
+    # else in the folder (proxy.py, .git, notes) stays off the wire.
+    def _safe_path(self):
+        path = self.path.split("?", 1)[0].split("#", 1)[0]
+        if path in ("", "/"):
+            return "/index.html"
+        rel = path.lstrip("/")
+        parts = Path(rel).parts
+        if any(p == ".." for p in parts):
+            return None
+        if rel in ("index.html", "favicon.ico"):
+            return "/" + rel
+        if parts and parts[0] in ("vendor", "assets"):
+            return "/" + rel
+        return None
 
     # ---------------- routes ----------------
     def do_GET(self):
+        if not self._local_only():
+            return self._json(403, {"error": "cross-origin blocked"})
         if self.path.startswith("/api/health"):
             provs = provider_status()
             ready = [p for p in provs if p["ready"]]
@@ -109,7 +138,24 @@ class Handler(SimpleHTTPRequestHandler):
                 "key": bool(ready), "provider": ready[0]["id"] if ready else None,
                 "providers": provs, "count": len(ready),
             })
+        safe = self._safe_path()
+        if safe is None:
+            return self._json(404, {"error": "not found"})
+        self.path = safe
         return super().do_GET()
+
+    def do_HEAD(self):
+        if not self._local_only():
+            self.send_response(403)
+            self.end_headers()
+            return
+        safe = self._safe_path()
+        if safe is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.path = safe
+        return super().do_HEAD()
 
     def do_POST(self):
         if not self._local_only():
@@ -123,6 +169,10 @@ class Handler(SimpleHTTPRequestHandler):
     def import_key(self):
         """Store a key in the DPAPI vault. The value passes through once and is
         never returned, logged, or written anywhere else."""
+        # writing a credential needs a browser origin; a bare local client can
+        # call this without ever being seen by the UI
+        if not self.headers.get("Origin"):
+            return self._json(403, {"error": "origin required"})
         try:
             b = self._body()
             handle = (b.get("handle") or "").strip().lower()
@@ -162,16 +212,29 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(503, {"error": f"no key stored for {cfg['label']}", "provider": pid})
 
         model = (b.get("model") or cfg["model"]).strip() or cfg["model"]
+        try:
+            temperature = float(b.get("temperature", 0.85))
+            max_tokens = int(b.get("max_tokens", 400))
+        except (TypeError, ValueError):
+            return self._json(400, {"error": "temperature and max_tokens must be numbers"})
+        if not (0.0 <= temperature <= 2.0):
+            return self._json(400, {"error": "temperature out of range"})
+        if not (1 <= max_tokens <= 4096):
+            return self._json(400, {"error": "max_tokens out of range"})
         payload = {
             "model": model,
             "messages": messages,
-            "temperature": float(b.get("temperature", 0.85)),
-            "max_tokens": int(b.get("max_tokens", 400)),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
-        # gpt-oss on Groq thinks out loud and eats the budget; keep it terse
-        if pid == "groq" and "gpt-oss" in model:
+        # gpt-oss thinks out loud and eats the budget; keep it terse. This is
+        # a model trait, not a Groq one - OpenRouter serves the same weights.
+        # OpenAI rejects `reasoning_effort` on non-reasoning models, so keep it
+        # to the gpt-oss family only.
+        if "gpt-oss" in model:
             payload["reasoning_effort"] = "low"
-            payload["max_completion_tokens"] = payload.pop("max_tokens")
+            if pid in ("groq", "openrouter"):
+                payload["max_completion_tokens"] = payload.pop("max_tokens")
 
         headers = {"Content-Type": "application/json", "Accept": "application/json",
                    "User-Agent": GROQ_UA}
@@ -185,12 +248,20 @@ class Handler(SimpleHTTPRequestHandler):
         )
         try:
             with urllib.request.urlopen(req, timeout=45) as resp:
-                data = json.loads(resp.read())
+                raw = resp.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
             return self._json(502, {"error": f"{cfg['label']} {exc.code}", "detail": detail})
         except Exception as exc:
             return self._json(502, {"error": f"{cfg['label']} unreachable: {type(exc).__name__}"})
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return self._json(502, {
+                "error": f"{cfg['label']} sent something that is not JSON",
+                "detail": raw[:300].decode("utf-8", "replace"),
+            })
 
         if cfg["handle"]:
             try:
@@ -199,12 +270,21 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
 
         try:
-            msg = data["choices"][0]["message"]
+            msg = data["choices"][0]["message"] or {}
             content = (msg.get("content") or "").strip()
-            if not content and msg.get("reasoning"):
-                content = ""
         except Exception:
-            content = ""
+            return self._json(502, {
+                "error": f"{cfg['label']} returned an unexpected body",
+                "detail": json.dumps(data)[:300],
+            })
+        if not content:
+            # a reasoning model can spend the whole budget thinking and send
+            # content: null. that is not a successful reply.
+            return self._json(502, {
+                "error": "empty reply - the model spent its budget thinking",
+                "detail": "try a smaller model, or raise max_tokens",
+                "provider": pid,
+            })
         return self._json(200, {"content": content, "provider": pid, "model": model})
 
 

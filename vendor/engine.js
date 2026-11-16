@@ -178,7 +178,9 @@
   function Client(url, opts) {
     opts = opts || {};
     this.url = url;
-    this.hash = opts.hash || 32;
+    /* The bundled stockfish.js is a 32 MB fixed heap, so a 32 MB table cannot
+       fit. 16 MB leaves room for the engine's own tables. */
+    this.hash = Math.min(16, opts.hash || 16);
     this.multipv = opts.multipv || 1;
     this.cache = new LRU(opts.cacheSize || 2048);
     this.stats = { hits: 0, misses: 0, searches: 0 };
@@ -186,21 +188,60 @@
     this._skill = 20;
     this._on = null;
     this._draining = false;
+    this._drainTimer = null;
+    this._goSent = false;
+    this._stopRequested = false;
+    this._abort = null;
+    this._error = null;
     this._tail = Promise.resolve();
     this._pending = null;
     this.worker = new global.Worker(url);
     var self = this;
     this.worker.onmessage = function (e) { self._message(e); };
+    this.worker.onerror = function (ev) {
+      self._fail((ev && (ev.message || ev.type)) || 'worker error');
+    };
+    this.worker.onmessageerror = function () { self._fail('worker message error'); };
   }
+
+  Client.prototype._fail = function (msg) {
+    this._error = String(msg || 'engine error');
+    this.ready = false;
+    this._pending = null;     // so init() can actually retry a dead worker
+    this._draining = false;
+    this._goSent = false;
+    if (this._drainTimer) { clearTimeout(this._drainTimer); this._drainTimer = null; }
+    this._on = null;
+    var abort = this._abort;
+    this._abort = null;
+    if (abort) abort();
+  };
+
+  Client.prototype._beginDrain = function () {
+    var self = this;
+    this._draining = true;
+    if (this._drainTimer) clearTimeout(this._drainTimer);
+    /* A trailing bestmove that never comes must not swallow the next search. */
+    this._drainTimer = setTimeout(function () {
+      self._draining = false;
+      self._drainTimer = null;
+    }, 4000);
+  };
 
   Client.prototype._message = function (e) {
     var d = e && e.data;
     var line = typeof d === 'string' ? d : (d && typeof d.data === 'string' ? d.data : '');
     if (!line) return;
     if (this._draining) {
-      if (line.indexOf('bestmove') === 0) this._draining = false;
+      if (line.indexOf('bestmove') === 0) {
+        this._draining = false;
+        if (this._drainTimer) { clearTimeout(this._drainTimer); this._drainTimer = null; }
+      }
       return;
     }
+    /* A bestmove with no active `go` is left over from a cancelled search.
+       Dropping it here keeps it from ending the next search with the wrong move. */
+    if (line.indexOf('bestmove') === 0 && !this._goSent) return;
     if (this._on) this._on(line);
   };
 
@@ -231,12 +272,16 @@
     var self = this;
     this._pending = this._queue(async function () {
       self._send('uci');
-      await self._wait(function (l) { return l === 'uciok'; }, 8000);
+      var uciok = await self._wait(function (l) { return l === 'uciok'; }, 8000);
+      if (!uciok) { self._fail('no uciok'); return self; }
       self._send('setoption name Hash value ' + self.hash);
       self._send('setoption name Ponder value false');
       self._send('setoption name MultiPV value ' + self.multipv);
       self._send('isready');
-      await self._wait(function (l) { return l === 'readyok'; }, 8000);
+      /* a timeout is not "ready": leaving ready=true here made every later
+         search talk to an engine that never finished booting */
+      var readyok = await self._wait(function (l) { return l === 'readyok'; }, 8000);
+      if (!readyok) { self._fail('no readyok'); return self; }
       self.ready = true;
       self.setSkill(self._skill);
       return self;
@@ -246,25 +291,39 @@
 
   Client.prototype.setSkill = function (n) {
     this._skill = Math.max(0, Math.min(20, n | 0));
-    this._send('setoption name Skill Level value ' + this._skill);
+    /* Before `uciok` this command would be dropped on the floor; init()
+       re-applies the stored value once the engine is ready. */
+    if (this.ready) this._send('setoption name Skill Level value ' + this._skill);
   };
 
   /* Ask the current search to end now. It still resolves with its best so far. */
   Client.prototype.stop = function () {
-    if (this._on) this._send('stop');
+    if (this._on) {
+      this._send('stop');
+    } else {
+      /* Queued but not started: remember it so _run() stops as soon as it can. */
+      this._stopRequested = true;
+    }
   };
 
   Client.prototype.book = function (fen) {
     var hit = bookIndex().get(normFen(fen));
-    return hit || null;
+    return hit ? Object.assign({}, hit) : null;
   };
 
   Client.prototype.lookup = function (fen) { return this.cache.get(normFen(fen)); };
 
   Client.prototype.clear = function () {
+    var self = this;
     this.cache.clear();
-    this._send('ucinewgame');
-    this._send('isready');
+    this._stopRequested = false;
+    /* The readyok has to be consumed here, or it lands on whatever search
+       starts next and is mistaken for that search's output. */
+    return this._queue(async function () {
+      self._send('ucinewgame');
+      self._send('isready');
+      await self._wait(function (l) { return l === 'readyok'; }, 5000);
+    });
   };
 
   /*
@@ -286,7 +345,10 @@
     var depth = opts.depth | 0;
     var movetime = opts.movetime | 0;
     var skill = opts.skill === undefined ? 20 : (opts.skill | 0);
-    var key = normFen(fen) + (skill < 20 ? '|s' + skill : '') + (opts.searchmoves ? '|m' + opts.searchmoves : '');
+    var pvLines = opts.multiPV || 1;
+    var key = normFen(fen) + (skill < 20 ? '|s' + skill : '') +
+      (opts.searchmoves ? '|m' + opts.searchmoves : '') +
+      (pvLines > 1 ? '|pv' + pvLines : '');
 
     /* Look the position up inside the queue, not before it: a search queued
        behind an identical one should reuse that result instead of repeating it. */
@@ -296,7 +358,10 @@
         var minDepth = opts.minCachedDepth || 8;
         if (hit && (depth ? hit.depth >= depth : hit.depth >= minDepth)) {
           self.stats.hits++;
-          var cached = Object.assign({}, hit, { cached: true, fen: fen, best: hit.best });
+          var cached = Object.assign({}, hit, {
+            cached: true, fen: fen, best: hit.best,
+            pv: (hit.pv || []).slice()   // never hand out the cache's own array
+          });
           if (opts.onInfo) opts.onInfo(cached);
           return cached;
         }
@@ -327,6 +392,8 @@
         clearTimeout(guard);
         clearTimeout(safety);
         self._on = null;
+        self._abort = null;
+        self._goSent = false;
         if ((opts.multiPV || 1) > 1) self._send('setoption name MultiPV value 1');
         var res = {
           cp: state.cp, mate: state.mate, best: state.best,
@@ -335,16 +402,25 @@
           ms: Date.now() - started, cached: false, ok: !!state.best,
           reason: reason || 'bestmove', fen: fen
         };
-        if (state.best && state.depth > 0 && !opts.noCache) self.cache.set(key, res);
+        /* Only a straight single-PV search may seed the transposition cache:
+           a MultiPV line 1 is scored under a different root widening. */
+        if (state.best && state.depth > 0 && !opts.noCache && (opts.multiPV || 1) === 1) {
+          self.cache.set(key, res);
+        }
         self.stats.searches++;
         resolve(res);
       }
+
+      self._abort = function () { finish('error'); };
 
       self._on = function (line) {
         if (line.indexOf('info') === 0) {
           if (/\bcurrmove\b/.test(line)) return;
           var p = parseInfo(line);
           if (p.multipv && p.multipv > 1) return;   // pv 1 only drives the UI
+          /* Fail-high / fail-low lines carry a tentative score and a one-move
+             PV. Using them would show a fake eval and a truncated best line. */
+          if (p.bound) return;
           if (p.depth) state.depth = p.depth;
           if (p.seldepth) state.seldepth = p.seldepth;
           if (p.cp !== undefined) state.cp = p.cp;
@@ -380,7 +456,14 @@
       var go = opts.depth ? ('go depth ' + opts.depth)
                           : ('go movetime ' + (opts.movetime || 300));
       if (opts.searchmoves) go += ' searchmoves ' + opts.searchmoves;
+      self._goSent = true;
       self._send(go);
+
+      /* stop() called while this job was still queued: honour it now. */
+      if (self._stopRequested) {
+        self._stopRequested = false;
+        self._send('stop');
+      }
 
       /* Ask politely at the deadline (bestmove arrives almost at once), then
          give up on the line entirely if the engine never answers. */
@@ -388,7 +471,7 @@
         forced = true;
         self._send('stop');
         safety = setTimeout(function () {
-          self._draining = true;   // swallow that search's trailing bestmove
+          self._beginDrain();   // swallow that search's trailing bestmove
           finish('timeout');
         }, 1500);
       }, hard);

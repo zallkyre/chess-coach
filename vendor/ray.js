@@ -16,7 +16,7 @@
 (function (global) {
   'use strict';
 
-  var LAST = '';
+  var LAST = {};
   var BAGS = {};
 
   function shuffled(n) {
@@ -29,19 +29,22 @@
     return a;
   }
 
-  /* Next unused line from a pool; refills only when the pool is exhausted. */
+  /* Next unused line from a pool; refills only when the pool is exhausted.
+     `LAST` is per pool so a one-line pool still rotates instead of sticking. */
   function pick(pool, key) {
     if (!pool || !pool.length) return '';
     key = key || 'x';
     var bag = BAGS[key];
     if (!bag || !bag.length) bag = BAGS[key] = shuffled(pool.length);
     for (var tries = 0; tries < pool.length; tries++) {
+      if (!bag.length) bag = BAGS[key] = shuffled(pool.length);
       var idx = bag.pop();
       var line = pool[idx];
-      if (line && line !== LAST) { LAST = line; return line; }
-      if (!bag.length) bag = BAGS[key] = shuffled(pool.length);
+      if (line && line !== LAST[key]) { LAST[key] = line; return line; }
     }
-    return pool[0] || '';
+    var fallback = pool[Math.floor(Math.random() * pool.length)] || '';
+    LAST[key] = fallback;
+    return fallback;
   }
 
   function fill(tpl, c) {
@@ -53,7 +56,8 @@
       .replace(/\{captured\}/g, c.captured || 'piece')
       .replace(/\{bestSan\}/g, c.bestSan || 'something else')
       .replace(/\{bestTo\}/g, c.bestTo || c.to || '?')
-      .replace(/\{loss\}/g, c.lossText || 'a bit')
+      .replace(/\{loss\}/g, c.lossText ||
+        (typeof c.loss === 'number' ? (c.loss / 100).toFixed(1) + ' pawns' : 'a bit'))
       .replace(/\{eval\}/g, c.evalText || 'level')
       .replace(/\{n\}/g, c.moveNo || '?');
   }
@@ -106,6 +110,11 @@
     'only legal move. no notes. the board chose for you.',
     'one move available. i cannot rate a hostage situation.',
     'forced. we move on.'
+  ];
+  var BRILLIANT = [
+    '{san}? you gave material away on purpose and it works. that is the real thing.',
+    'that is a sacrifice i would have been too scared to play. {san}.',
+    'brilliant. {san} looks wrong and is right. i hate it and i respect it.'
   ];
   var CAPTURE = [
     'took the {captured} on {to}. free-ish material, i will take it.',
@@ -167,11 +176,15 @@
     var cls = c.only ? 'forced' : (c.cls || 'good');
     var pool = { best: BEST, great: BEST, excellent: EXCELLENT, good: GOOD,
                  book: BOOK, inaccuracy: INACC, mistake: MISTAKE, miss: MISTAKE,
-                 blunder: BLUNDER, forced: FORCED }[cls] || GOOD;
+                 blunder: BLUNDER, forced: FORCED,
+                 brilliant: BRILLIANT, mate: BEST, checkmate: BEST,
+                 theory: BOOK }[cls] || GOOD;
 
     var line = fill(pick(pool, cls), c);
     var extra = contextBits(c);
-    if (extra.length && Math.random() < 0.65) line += ' ' + extra[0];
+    // extras are templates too: without fill() the player sees a literal
+    // {captured} or {to} in Ray's line
+    if (extra.length && Math.random() < 0.65) line += ' ' + fill(extra[0], c);
 
     // stateful, personal touches: streaks, a bad run, a good run
     if (c.streak >= 2 && (cls === 'mistake' || cls === 'blunder' || cls === 'miss')) {
@@ -210,9 +223,30 @@
 
   function chat(text, c) {
     c = c || {};
-    var t = String(text || '').toLowerCase();
-    if (/(why|explain)/.test(t)) return fill(pick(WHY, 'why'), c);
-    if (/^(hi|hello|hey|yo)\b/.test(t)) return fill(pick(HELLO, 'hello'), c);
+    var t = String(text || '').toLowerCase().trim();
+    /* "why is Nf3 good" is a question about the move; "why did black play that"
+       is about the opponent. Only answer the first as a coach. */
+    if (/\b(why|explain)\b/.test(t) && /\b(move|best|engine|that|this|suggest|line)\b/.test(t)) {
+      return fill(pick(WHY, 'why'), c);
+    }
+    if (/^(hi|hello|hey|yo|sup)\b/.test(t) || /^(ray|coach)\b/.test(t) || /\bray\s*[,!?]?\s*$/.test(t)) {
+      return fill(pick(HELLO, 'hello'), c);
+    }
+    if (/\b(eval|evaluation|score|advantage|better|winning)\b/.test(t)) {
+      return 'eval is ' + (c.evalText || 'level') +
+        '. i read the number and then talk like i knew it all along.';
+    }
+    if (/\b(opening|line|theory|gambit)\b/.test(t)) {
+      if (c.opening) {
+        return 'you are in the ' + c.opening + '. ' +
+          (c.gambit ? 'that is a gambit, so buckle up.' : 'mainline stuff.');
+      }
+      return 'no theory name for this yet. you are on your own in the wilderness.';
+    }
+    if (/\b(threat|danger|hanging|attack|safe)\b/.test(t)) {
+      if (c.threat) return 'your ' + c.threat + ' is attacked. deal with it or lose it.';
+      return 'nothing is hanging right now. that is the good news.';
+    }
     if (/(rating|elo|how good)/.test(t)) {
       var a = c.accuracy;
       return 'elo is a lie and i do not trust it. ' +
@@ -220,11 +254,17 @@
     }
     if (/(undo|take ?back|revert)/.test(t)) return 'hit revert. i will not tell anyone.';
     if (/(thanks|ty|nice)/.test(t)) return pick(THANKS, 'thanks');
-    if (/(bad|suck|terrible|awful)/.test(t)) return pick(BAD, 'bad');
+    /* Only self-deprecation when the complaint is about himself or the coaching,
+       not when it is about the position or the opponent. */
+    if (/\b(i|me|my)\b/.test(t) && /\b(bad|suck|terrible|awful|trash)\b/.test(t)) {
+      return pick(BAD, 'bad');
+    }
     if (/(stockfish|engine|bot)/.test(t)) return pick(ENGINE, 'eng');
     if (/(review|analyse|analyze)/.test(t)) return 'finish the game and i will walk through every move. that is the part i am actually good at.';
     return fill(pick(NOTHING, 'nothing'), c);
   }
 
-  global.Ray = { comment: comment, chat: chat, evalText: evalText };
+  function reset() { LAST = {}; BAGS = {}; }
+
+  global.Ray = { comment: comment, chat: chat, evalText: evalText, reset: reset };
 })(typeof window !== 'undefined' ? window : this);
