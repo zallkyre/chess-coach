@@ -36,8 +36,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QProgressBar, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider,
+    QStyle, QVBoxLayout, QWidget,
 )
 
 import app as core
@@ -210,6 +211,35 @@ class Card(QWidget):
 # --------------------------------------------------------------------------
 # board
 # --------------------------------------------------------------------------
+class JumpSlider(QSlider):
+    def _value_at(self, x):
+        span = max(1, self.width())
+        return QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), int(x), span)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.setValue(self._value_at(e.position().x()))
+            self.setSliderDown(True)
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self.isSliderDown():
+            self.setValue(self._value_at(e.position().x()))
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self.isSliderDown():
+            self.setSliderDown(False)
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+
 class Board(QWidget):
     clicked = Signal(int, int)      # from_square, to_square (-1 = select only)
 
@@ -237,6 +267,8 @@ class Board(QWidget):
         self._press = None
         self._moved = False
         self.last_drag = False
+        self._drag_sq = None
+        self._drag_pos = None
         self.pix = {}
         self.setMinimumSize(420, 420)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -357,7 +389,7 @@ class Board(QWidget):
         moving = self.anim[5] if self.anim else None
         for sq in chess.SQUARES:
             piece = self.board.piece_at(sq)
-            if piece is None or (moving and sq == moving):
+            if piece is None or (moving and sq == moving) or sq == self._drag_sq:
                 continue
             r = self.square_rect(sq)
             pm = self.pixmap(piece, c * 0.94)
@@ -370,6 +402,17 @@ class Board(QWidget):
             pos = p0 + (p1 - p0) * k
             pm = self.pixmap(piece, c * 0.94)
             p.drawPixmap(pos - QPointF(pm.width() / 2, pm.height() / 2), pm)
+
+        if self._drag_sq is not None and self._drag_pos is not None:
+            piece = self.board.piece_at(self._drag_sq)
+            if piece is not None:
+                size = c * 1.02
+                pm = self.pixmap(piece, size)
+                shadow = self._drag_pos + QPointF(3, 4)
+                p.setOpacity(0.28)
+                p.drawPixmap(shadow - QPointF(pm.width() / 2, pm.height() / 2), pm)
+                p.setOpacity(1.0)
+                p.drawPixmap(self._drag_pos - QPointF(pm.width() / 2, pm.height() / 2), pm)
 
         if self.show_arrows:
             for a, b in self.user_arrows:
@@ -462,11 +505,18 @@ class Board(QWidget):
         self._moved = False
         self._press = self.at(e.position().x(), e.position().y())
         if self._press is not None:
+            piece = self.board.piece_at(self._press)
+            if piece is not None and piece.color == self.player_color:
+                self._drag_sq = self._press
+                self._drag_pos = e.position()
             self.clicked.emit(self._press, -1)
 
     def mouseMoveEvent(self, e):
         # A press that travels to another square is a drag: the piece is under
         # the cursor already, so it must snap instead of sliding from its origin.
+        if self._drag_sq is not None:
+            self._drag_pos = e.position()
+            self.update()
         if self._press is not None:
             here = self.at(e.position().x(), e.position().y())
             if here is not None and here != self._press:
@@ -486,6 +536,9 @@ class Board(QWidget):
                     self.user_arrows.append(pair)
                 self.update()
             return
+        self._drag_sq = None
+        self._drag_pos = None
+        self.update()
         start = getattr(self, "_press", None)
         self._press = None
         self.last_drag = getattr(self, "_moved", False)
@@ -709,7 +762,12 @@ class Window(QMainWindow):
         self.moves.setStyleSheet("background:rgba(12,16,12,.35);border-radius:12px;"
                                  "padding:10px;color:#e9e6e2;font:600 13px 'Segoe UI'")
         self.moves.setMinimumHeight(150)
-        ml.addWidget(self.moves)
+        _move_scroll = QScrollArea()
+        _move_scroll.setWidgetResizable(True)
+        _move_scroll.setFixedHeight(170)
+        _move_scroll.setFrameShape(QFrame.NoFrame)
+        _move_scroll.setWidget(self.moves)
+        ml.addWidget(_move_scroll)
         right.addWidget(moves_card)
 
         diff = Card()
@@ -723,15 +781,17 @@ class Window(QMainWindow):
         dh.addWidget(lab)
         dh.addStretch(1)
         dh.addWidget(self.dval)
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = JumpSlider(Qt.Horizontal)
         self.slider.setRange(1, 20)
         self.slider.setValue(5)
         self.slider.valueChanged.connect(self.on_diff)
         dl.addLayout(dh)
         dl.addWidget(self.slider)
+        self.slider.setStyleSheet("QSlider::groove:horizontal{height:8px;background:#171d17;border-radius:4px} QSlider::sub-page:horizontal{background:#4f7a45;border-radius:4px} QSlider::handle:horizontal{width:18px;margin:-6px 0;border-radius:9px;background:#9ad97f}")
         self.hopeless = QCheckBox("hopeless")
         self.hopeless.setStyleSheet("color:#8d96a8;font:600 11px 'Segoe UI'")
         dl.addWidget(self.hopeless)
+        self.hopeless.toggled.connect(self.on_hopeless)
         right.addWidget(diff)
 
         settings = Card()
@@ -1178,6 +1238,13 @@ class Window(QMainWindow):
     def set_flag(self, attr, on):
         setattr(self.boardw, attr, on)
         self.boardw.update()
+
+    def on_hopeless(self, on):
+        if on:
+            self.dval.setText("hopeless")
+            self.lvl.setText("HOPELESS")
+        else:
+            self.on_diff(self.slider.value())
 
     def on_diff(self, v):
         names = ("beginner", "beginner", "beginner", "beginner", "casual", "casual",
