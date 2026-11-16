@@ -36,7 +36,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QApplication, QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QProgressBar, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -87,8 +87,13 @@ def svg_for(kind: str, color: str) -> bytes:
 # --------------------------------------------------------------------------
 # engine install (progress window)
 # --------------------------------------------------------------------------
-SF_URL = ("https://github.com/official-stockfish/Stockfish/releases/latest/download/"
-          "stockfish-windows-x86-64.zip")
+SF_BASE = "https://github.com/official-stockfish/Stockfish/releases/latest/download/"
+SF_URLS = [SF_BASE + name for name in (
+    "stockfish-windows-x86-64-avx2.zip",
+    "stockfish-windows-x86-64-sse41-popcnt.zip",
+    "stockfish-windows-x86-64.zip",
+    "stockfish-windows-x86-64-bmi2.zip",
+)]
 
 
 class Installer(QDialog):
@@ -122,34 +127,42 @@ class Installer(QDialog):
     def _work(self):
         target = core.data_dir() / "engine" / "stockfish.exe"
         target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            req = urllib.request.Request(SF_URL, headers={"User-Agent": "chess-coach/2"})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                total = int(r.headers.get("Content-Length") or 0)
-                buf = io.BytesIO()
-                read = 0
-                while True:
-                    chunk = r.read(262144)
-                    if not chunk:
-                        break
-                    buf.write(chunk)
-                    read += len(chunk)
-                    if total:
-                        self.bar.setValue(int(read * 100 / total))
-                    self.status.setText(f"{read / 1_048_576:.1f} MB of {total / 1_048_576:.1f} MB")
-            buf.seek(0)
-            with zipfile.ZipFile(buf) as z:
-                exe = next(n for n in z.namelist() if n.lower().endswith(".exe"))
-                target.write_bytes(z.read(exe))
-            self.done.emit(True)
-            self.accept()
-        except Exception as exc:                      # network, zip, disk
-            self.status.setText("install failed — check the connection")
-            self.bar.setStyleSheet(
-                "QProgressBar{background:rgba(255,255,255,.08);border:none;border-radius:5px}"
-                "QProgressBar::chunk{background:#ca3431;border-radius:5px}")
-            self.setToolTip(str(exc))
-            self.done.emit(False)
+        last = "unknown error"
+        for url in SF_URLS:
+            try:
+                self.status.setText("connecting…")
+                req = urllib.request.Request(url, headers={"User-Agent": "chess-coach/2"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    total = int(r.headers.get("Content-Length") or 0)
+                    buf = io.BytesIO()
+                    read = 0
+                    while True:
+                        chunk = r.read(262144)
+                        if not chunk:
+                            break
+                        buf.write(chunk)
+                        read += len(chunk)
+                        if total:
+                            self.bar.setValue(int(read * 100 / total))
+                        self.status.setText(f"{read / 1_048_576:.1f} MB of "
+                                            f"{total / 1_048_576:.1f} MB")
+                buf.seek(0)
+                with zipfile.ZipFile(buf) as z:
+                    name = next(n for n in z.namelist() if n.lower().endswith(".exe"))
+                    target.write_bytes(z.read(name))
+                self.done.emit(True)
+                self.accept()
+                return
+            except Exception as exc:                  # try the next asset name
+                last = f"{type(exc).__name__}: {exc}"
+                continue
+        # every URL failed: leave the window open with the real reason
+        self.status.setText("install failed — " + last[:110])
+        self.setToolTip(last)
+        self.bar.setStyleSheet(
+            "QProgressBar{background:rgba(255,255,255,.08);border:none;border-radius:5px}"
+            "QProgressBar::chunk{background:#ca3431;border-radius:5px}")
+        self.done.emit(False)
 
 
 # --------------------------------------------------------------------------
@@ -161,6 +174,9 @@ class Bridge(QObject):
     hinted = Signal(object)     # best_move() result
     evaluated = Signal(object)  # idle baseline eval
     failed = Signal(str)
+
+
+BRIDGE = Bridge()
 
 
 # --------------------------------------------------------------------------
@@ -208,9 +224,19 @@ class Board(QWidget):
         self.hint_from = None
         self.hint_to = None
         self.pre = None                  # (from_sq, to_sq) premove
+        self.user_arrows = []            # right-drag arrows, persist through moves
+        self.threats = True
+        self.dots = True
+        self.coords = True
+        self.eval_on = True
+        self.show_arrows = True
+        self._rpress = None
         self.badge = None               # (square, cls)
         self.badge_at = 0.0
-        self.anim = None                # (piece, color, p0, p1, t0)
+        self.anim = None                # (piece, color, p0, p1, t0, dest_sq)
+        self._press = None
+        self._moved = False
+        self.last_drag = False
         self.pix = {}
         self.setMinimumSize(420, 420)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -315,7 +341,7 @@ class Board(QWidget):
             p.setBrush(g)
             p.drawEllipse(r.center(), c * 0.62, c * 0.62)
 
-        if self.selected is not None:
+        if self.selected is not None and self.dots:
             p.setPen(Qt.NoPen)
             for mv in self.legal:
                 r = self.square_rect(mv.to_square)
@@ -328,25 +354,39 @@ class Board(QWidget):
                     p.drawEllipse(r.center(), c * 0.15, c * 0.15)
 
         # pieces (skip the one in flight)
-        moving = self.anim[0] if self.anim else None
+        moving = self.anim[5] if self.anim else None
         for sq in chess.SQUARES:
             piece = self.board.piece_at(sq)
-            if piece is None or (moving and sq == self.anim[3]):
+            if piece is None or (moving and sq == moving):
                 continue
             r = self.square_rect(sq)
             pm = self.pixmap(piece, c * 0.94)
             p.drawPixmap(r.center() - QPointF(pm.width() / 2, pm.height() / 2), pm)
 
         if self.anim:
-            piece, _color, p0, p1, t0 = self.anim
+            piece, _color, p0, p1, t0, _sq = self.anim
             k = min(1.0, (time.time() - t0) / 0.17)
             k = 1 - (1 - k) ** 3
             pos = p0 + (p1 - p0) * k
             pm = self.pixmap(piece, c * 0.94)
             p.drawPixmap(pos - QPointF(pm.width() / 2, pm.height() / 2), pm)
 
+        if self.show_arrows:
+            for a, b in self.user_arrows:
+                self._arrow(p, a, b, QColor("#e8a13a"), 5)
+            if self.threats:
+                self._threats(p)
         if self.hint_to is not None:
             self._arrow(p, self.hint_from, self.hint_to)
+        if self.coords:
+            p.setPen(QColor(40, 60, 30, 170))
+            f = QFont("Consolas", max(6, int(c * 0.12)))
+            p.setFont(f)
+            for i in range(8):
+                p.drawText(QRectF(ox + i * c, oy + 8 * c - c * 0.2, c, c * 0.2),
+                           Qt.AlignRight, chr(ord('a') + i))
+                p.drawText(QRectF(ox + 3, oy + (7 - i) * c + 2, c * 0.2, c * 0.2),
+                           Qt.AlignLeft, str(i + 1))
 
         if self.badge:
             sq, cls = self.badge
@@ -373,7 +413,25 @@ class Board(QWidget):
             self.pix[key] = pm
         return self.pix[key]
 
-    def _arrow(self, p, a, b):
+    def _threats(self, p):
+        """Red arrows: their pieces attacking ours, worst victim first."""
+        enemy = not self.player_color
+        if self.board.turn != enemy:
+            return
+        found = []
+        for sq in chess.SQUARES:
+            piece = self.board.piece_at(sq)
+            if not piece or piece.color != enemy:
+                continue
+            for target in self.board.attacks(sq):
+                victim = self.board.piece_at(target)
+                if victim and victim.color == self.player_color:
+                    found.append((victim.piece_type, sq, target))
+        found.sort(key=lambda t: t[0], reverse=True)
+        for _kind, a, b in found[:3]:
+            self._arrow(p, a, b, QColor(221, 90, 90, 150), 4)
+
+    def _arrow(self, p, a, b, color=None, width=None):
         if a is None or b is None:
             return
         ra, rb = self.square_rect(a), self.square_rect(b)
@@ -383,7 +441,8 @@ class Board(QWidget):
         length = (v.x() ** 2 + v.y() ** 2) ** 0.5 or 1
         u = QPointF(v.x() / length, v.y() / length)
         tip = end - u * (c * 0.28)
-        p.setPen(QPen(ARROW, max(4, c * 0.075), Qt.SolidLine, Qt.RoundCap))
+        p.setPen(QPen(color or ARROW, width or max(4, c * 0.075),
+                      Qt.SolidLine, Qt.RoundCap))
         p.drawLine(start + u * (c * 0.3), tip)
         left = tip + QPointF(-u.y(), u.x()) * (c * 0.14)
         right = tip + QPointF(u.y(), -u.x()) * (c * 0.14)
@@ -392,18 +451,50 @@ class Board(QWidget):
         head.lineTo(right)
         head.closeSubpath()
         p.setPen(Qt.NoPen)
-        p.setBrush(ARROW)
+        p.setBrush(color or ARROW)
         p.drawPath(head)
 
     # ---------- input ----------
     def mousePressEvent(self, e):
-        sq = self.at(e.position().x(), e.position().y())
-        if sq is None:
+        if e.button() == Qt.RightButton:
+            self._rpress = self.at(e.position().x(), e.position().y())
             return
-        if self.selected is not None and sq != self.selected:
-            self.clicked.emit(self.selected, sq)
-        else:
-            self.clicked.emit(sq, -1)
+        self._moved = False
+        self._press = self.at(e.position().x(), e.position().y())
+        if self._press is not None:
+            self.clicked.emit(self._press, -1)
+
+    def mouseMoveEvent(self, e):
+        # A press that travels to another square is a drag: the piece is under
+        # the cursor already, so it must snap instead of sliding from its origin.
+        if self._press is not None:
+            here = self.at(e.position().x(), e.position().y())
+            if here is not None and here != self._press:
+                self._moved = True
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.RightButton:
+            start = self._rpress
+            self._rpress = None
+            end = self.at(e.position().x(), e.position().y())
+            if start is not None and end is not None and end != start:
+                pair = (start, end)
+                if pair in self.user_arrows:
+                    self.user_arrows.remove(pair)
+                else:
+                    self.user_arrows.append(pair)
+                self.update()
+            return
+        start = getattr(self, "_press", None)
+        self._press = None
+        self.last_drag = getattr(self, "_moved", False)
+        if start is None:
+            return
+        end = self.at(e.position().x(), e.position().y())
+        if end is not None and end != start:
+            self.clicked.emit(start, end)
+
 
     def select(self, sq, legal):
         self.selected = sq
@@ -638,7 +729,25 @@ class Window(QMainWindow):
         self.slider.valueChanged.connect(self.on_diff)
         dl.addLayout(dh)
         dl.addWidget(self.slider)
+        self.hopeless = QCheckBox("hopeless")
+        self.hopeless.setStyleSheet("color:#8d96a8;font:600 11px 'Segoe UI'")
+        dl.addWidget(self.hopeless)
         right.addWidget(diff)
+
+        settings = Card()
+        sl = QHBoxLayout(settings)
+        sl.setContentsMargins(12, 8, 12, 8)
+        for label, attr in (("Threats", "threats"), ("Dots", "dots"),
+                            ("Coords", "coords"), ("Arrows", "show_arrows")):
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            cb.setStyleSheet("QCheckBox{color:#cfd6c9;font:11px 'Segoe UI'}"
+                             "QCheckBox::indicator{width:14px;height:14px;border-radius:4px;"
+                             "background:rgba(255,255,255,.12)}"
+                             "QCheckBox::indicator:checked{background:#81b64c}")
+            cb.toggled.connect(lambda on, a=attr: self.set_flag(a, on))
+            sl.addWidget(cb)
+        right.addWidget(settings)
 
         chat = Card()
         chl = QHBoxLayout(chat)
@@ -662,8 +771,44 @@ class Window(QMainWindow):
         BRIDGE.replied.connect(self.after_reply)
         BRIDGE.hinted.connect(self.after_hint)
         BRIDGE.evaluated.connect(self.after_baseline)
+        BRIDGE.failed.connect(self.after_fail)
+
+        # a search that never comes back must never leave "thinking" up forever
+        self._think_started = 0.0
+        self._watch = QTimer(self)
+        self._watch.timeout.connect(self.watch_think)
+        self._watch.start(1000)
 
         self.new_game(first=True)
+
+    def watch_think(self):
+        if not self.busy:
+            self._think_started = 0.0
+            return
+        now = time.time()
+        if not self._think_started:
+            self._think_started = now
+            return
+        if now - self._think_started < 12.0:
+            return
+        self._think_started = 0.0
+        self.busy = False
+        self.eng.setText("engine stalled")
+        self.say_text("the engine stopped answering — i'm waking it up.")
+        if not self.engine.alive():
+            threading.Thread(target=self._revive, daemon=True).start()
+
+    def _revive(self):
+        ok = self.engine.restart()
+        BRIDGE.failed.emit("" if ok else "engine restart failed")
+
+    def after_fail(self, why):
+        """A worker died: release the board and say why, never sit on thinking."""
+        self._think_started = 0.0
+        self.busy = False
+        self.eng.setText("engine ready" if not why else "engine failed")
+        if why:
+            self.say_text(f"engine hiccup: {why[:120]}")
 
     # ---------- helpers ----------
     def paint_bg(self):
@@ -763,18 +908,27 @@ class Window(QMainWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def on_board(self, a, b):
-        if self.game_over or self.busy:
+        if self.game_over:
+            return
+        if b == -1:
+            # selecting is always allowed, even while Ray thinks
+            probe = self.board
+            if self.board.turn != self.player_color:
+                probe = self.board.copy(stack=False)
+                probe.turn = self.player_color
+            piece = probe.piece_at(a)
+            if piece and piece.color == self.player_color:
+                self.boardw.select(a, [m for m in probe.legal_moves
+                                       if m.from_square == a])
+            else:
+                self.boardw.clear()
+            return
+        if self.busy:
             return
         if self.board.turn != self.player_color:
             # premove: validate against a copy of the board with our side to move
             probe = self.board.copy(stack=False)
             probe.turn = self.player_color
-            if b == -1:
-                piece = probe.piece_at(a)
-                if piece and piece.color == self.player_color:
-                    self.boardw.select(a, [m for m in probe.legal_moves
-                                           if m.from_square == a])
-                return
             mv = next((m for m in probe.legal_moves
                        if m.from_square == a and m.to_square == b), None)
             if mv is None:
@@ -799,9 +953,9 @@ class Window(QMainWindow):
             return
         if move.promotion and move.promotion != chess.QUEEN:
             move = chess.Move(a, b, promotion=chess.QUEEN)
-        self.play(move)
+        self.play(move, animate=not getattr(self.boardw, "last_drag", False))
 
-    def play(self, move, ray=False):
+    def play(self, move, ray=False, animate=True):
         fen_before = self.board.fen()
         only = self.board.legal_moves.count() == 1
         san = self.board.san(move)
@@ -809,7 +963,9 @@ class Window(QMainWindow):
         before = self.boardw.square_rect(move.from_square).center()
         self.board.push(move)
         after = self.boardw.square_rect(move.to_square).center()
-        self.boardw.anim = (self.board.piece_at(move.to_square), color, before, after, time.time())
+        # drag: the piece is already at the cursor, so it snaps. click: it slides.
+        self.boardw.anim = ((self.board.piece_at(move.to_square), color, before, after,
+                             time.time(), move.to_square) if animate else None)
         rec = {"move": move, "san": san, "fen": fen_before, "cls": None,
                "loss": 0, "only": only, "color": color, "best": None,
                "eval": None}
@@ -848,7 +1004,7 @@ class Window(QMainWindow):
             BRIDGE.failed.emit(str(exc))
 
     def _ray_move(self, rec):
-        level = self.difficulty()
+        level = 0 if self.hopeless.isChecked() else self.difficulty()
         uci = core.book_move(self.board.fen()) if level >= 3 else None
         if not uci:
             uci = self.engine.play(self.board.fen(), level,
@@ -893,7 +1049,7 @@ class Window(QMainWindow):
         p0 = self.boardw.square_rect(move.from_square).center()
         self.board.push(move)
         p1 = self.boardw.square_rect(move.to_square).center()
-        self.boardw.anim = (self.board.piece_at(move.to_square), color, p0, p1, time.time())
+        self.boardw.anim = (self.board.piece_at(move.to_square), color, p0, p1, time.time(), move.to_square)
         self.stack.append({"move": move, "san": san, "fen": fen_before, "cls": "opp",
                            "loss": 0, "only": False, "color": color, "best": None,
                            "eval": None})
@@ -1018,6 +1174,10 @@ class Window(QMainWindow):
     def flip(self):
         self.orientation = not self.orientation
         self.refresh()
+
+    def set_flag(self, attr, on):
+        setattr(self.boardw, attr, on)
+        self.boardw.update()
 
     def on_diff(self, v):
         names = ("beginner", "beginner", "beginner", "beginner", "casual", "casual",

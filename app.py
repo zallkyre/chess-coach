@@ -26,18 +26,20 @@ import chess
 import chess.pgn
 import tkinter as tk
 from tkinter import ttk, messagebox
-from PIL import Image, ImageDraw, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageTk
 
 APP = "Chess Coach"
-NOISE = 15                     # cp we do not count against you
+NOISE = 35                     # cp we do not count against you
 GRADE_DEPTH = 12               # live grade: ~60-110 ms, the reply never waits
 MOVE_TIME_MS = 150
 REVIEW_DEPTH = 16
 PREFETCH_DEPTH = 16            # background pass deepens every grade afterwards
-SLIDE_MS = 170
+SLIDE_MS = 185
+THINK_TIMEOUT = 12.0           # a single "thinking" that lasts longer is a hang
 SIDEBAR_W = 46                 # width of the button strip left of the board
 EVAL_W = 34                    # eval bar: wide enough to read a score in
 CACHE_MAX = 4096               # FEN entries kept in the transposition cache
+BEST_CACHE_MAX = 300           # precomputed best moves kept; oldest out first
 GRADE_CACHE_MAX = 1024
 
 
@@ -154,6 +156,7 @@ def _num(line: str, pattern: str, default: int = 0) -> int:
 
 class Engine:
     def __init__(self, path: Path, syzygy: str | None = None):
+        self.path = Path(path)
         si = None
         if os.name == "nt":
             si = subprocess.STARTUPINFO()
@@ -320,14 +323,16 @@ class Engine:
                     break
             if not finished:
                 # stop the search and swallow its late bestmove: otherwise the
-                # next search reads the previous one's result
+                # next search reads the previous one's result. non-blocking, so
+                # a wedged engine cannot hold this worker for the full 1.5 s.
                 self.send("stop")
                 drain = time.time() + 1.5
                 while time.time() < drain:
                     try:
-                        line = self.q.get(timeout=max(0.01, drain - time.time()))
+                        line = self.q.get_nowait()
                     except queue.Empty:
-                        break
+                        time.sleep(0.02)
+                        continue
                     if line.startswith("bestmove"):
                         break
             if multipv > 1:
@@ -461,12 +466,47 @@ class Engine:
         self._cache_put(key, info)
         return info
 
+    def alive(self) -> bool:
+        """True while the engine process is still there to answer."""
+        try:
+            return self.p.poll() is None
+        except Exception:
+            return False
+
+    def restart(self) -> bool:
+        """Replace a dead engine with a fresh one, keeping the cached scores."""
+        self.close()
+        try:
+            fresh = Engine(Path(self.path), syzygy=self.syzygy)
+        except Exception:
+            return False
+        # only the live plumbing is swapped; the score caches survive
+        self.p, self.q, self.lock = fresh.p, fresh.q, fresh.lock
+        return True
     def close(self):
         try:
             self.send("quit")
             self.p.terminate()
         except Exception:
             pass
+        # reap it: terminate() alone leaves a zombie on Windows long enough to
+        # matter, and a half-dead engine is what a "stuck on thinking" looks like
+        try:
+            self.p.wait(timeout=1.0)
+        except Exception:
+            try:
+                self.p.kill()
+                self.p.wait(timeout=1.0)
+            except Exception:
+                pass
+        # close the pipes here: a killed engine's pipe raises on close, and
+        # letting the garbage collector do it mid-swap leaked that error out
+        for stream in (getattr(self.p, "stdin", None),
+                       getattr(self.p, "stdout", None)):
+            try:
+                stream.close()
+            except Exception:
+                pass
 
 
 
@@ -494,7 +534,6 @@ def draw_piece(kind, color, size):
     d = ImageDraw.Draw(img)
     fill, stroke = PIECE_FILL[color], PIECE_STROKE[color]
     w = 4 * s
-
     if kind == "p":
         _ellipse(d, (37, 15, 63, 41), fill, stroke, w, s)
         _poly(d, [(38, 40), (62, 40), (68, 78), (32, 78)], fill, stroke, w, s)
@@ -521,7 +560,17 @@ def draw_piece(kind, color, size):
         _poly(d, [(29, 36), (71, 36), (75, 78), (25, 78)], fill, stroke, w, s)
 
     _poly(d, BASE, fill, stroke, w, s)
-    return img.resize((size, size), Image.LANCZOS)
+
+    # a soft shadow under the piece: flat fill on flat squares reads as paper
+    # cut-outs, and one blurred ellipse is what makes it sit on the board
+    shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    sd.ellipse([22 * s, 74 * s, 80 * s, 92 * s], fill=(0, 0, 0, 90))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(5 * s))
+    out = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    out.alpha_composite(shadow)
+    out.alpha_composite(img)
+    return out.resize((size, size), Image.LANCZOS)
 
 
 BG = "#262421"
@@ -818,7 +867,7 @@ PROMO = ["queened. now please do not give it back.",
 class Ray:
     """Ray's mouth. Same line never lands twice in a row, and every line is
     built from the move that actually happened (piece, squares, what was
-    better). No network, no key, no Groq."""
+    better). No network, no key, no provider."""
 
     def __init__(self):
         self._bags = {}
@@ -860,8 +909,16 @@ class Ray:
         if c.get("promo"):
             extra = (extra + " " if extra else "") + self._pick("promo", PROMO)
         if extra and random.random() < 0.65:
-            line = line + " " + extra.replace("{to}", str(c.get("to", "?")))
-        return line
+            # the extra pools carry {to} too; fill everything, never print a
+            # template at the player
+            for k, v in (("to", c.get("to", "?")),
+                         ("captured", c.get("captured") or "piece"),
+                         ("piece", c.get("piece", "piece"))):
+                extra = extra.replace("{" + k + "}", str(v))
+            line = line + " " + extra
+        # last resort: any placeholder the pools invent later
+        line = re.sub(r"\{[a-zA-Z_]+\}", "", line)
+        return re.sub(r"\s{2,}", " ", line).strip()
 
 
 RAY = Ray()
@@ -894,13 +951,13 @@ def classify(raw_loss, is_best=False):
     loss = max(0, raw_loss - NOISE)
     if is_best:
         return "best"
-    if loss <= 20:
+    if loss <= 25:
         return "excellent"
-    if loss <= 60:
+    if loss <= 75:
         return "good"
-    if loss <= 120:
+    if loss <= 150:
         return "inaccuracy"
-    if loss <= 250:
+    if loss <= 320:
         return "mistake"
     return "blunder"
 
@@ -1077,8 +1134,20 @@ def is_gambit(name):
 
 
 def grade_move(loss, is_best, gap, best_cp, played_cp, best_mate, sac, book, only):
-    """The badge for one move: brilliant > great > best > excellent > good >
-    book > inaccuracy > mistake > miss > blunder."""
+    """The badge for one move, using the chess.com reading of the symbols.
+
+    !!  brilliant  a good move that is hard to find: usually a piece offered
+                   as a sacrifice that still leaves you fine or better, and
+                   clearly better than everything else
+    !   great      the move that changes the game: the only one that keeps
+                   (or takes) the advantage, so the second best is far behind
+    ★   best       the engine's own top choice
+    ...  excellent / good      close to best, nothing to learn
+    ?!  inaccuracy a little material or tempo given away
+    ?   mistake    a clear error
+    ×   miss       you had a win or a tactic on and played something else
+    ??  blunder    the position falls apart
+    """
     if only:
         return "forced"
     if book:
@@ -1089,10 +1158,12 @@ def grade_move(loss, is_best, gap, best_cp, played_cp, best_mate, sac, book, onl
     if is_best:
         if played_cp >= 9900:               # mate on the board, nothing to style
             return "best"
-        if sac and played_cp >= -50:        # really hanging material, still fine
-            return "brilliant"
+        if sac and played_cp >= -50 and gap >= 120:
+            return "brilliant"              # a real offer, still fine, only move
         return "great" if gap >= 150 else "best"
-    return classify(loss, False)
+    if loss <= 25 and gap >= 250:
+        return "great"                      # not the top line, but the only
+    return classify(loss, False)            # move that holds the position
 
 
 def fmt_eval(cp):
@@ -1121,6 +1192,7 @@ class CoachApp:
         self.last_eval = 0
         self.game_over = False
         self.busy = False
+        self._think_started = 0.0
         self.reviewing = False
         self.epoch = 0               # bumped per game; stale callbacks check it
         self.review_mode = False
@@ -1169,6 +1241,7 @@ class CoachApp:
     def load_settings(self):
         d = {"difficulty": 5, "theme": "green", "threats": True, "dots": True,
              "coords": True, "evalbar": True, "talk": True, "review": True,
+             "hopeless": False,
              "locked": False, "provider": "local", "model": ""}
         try:
             d.update(json.loads((data_dir() / "settings.json").read_text()))
@@ -1203,10 +1276,54 @@ class CoachApp:
                     # never silently drop a queued update: a swallowed error
                     # here used to freeze the board mid-game with no clue why
                     traceback.print_exc()
+            self._watch_think()
         finally:
             self.root.after(25, self._pump)
 
+    def _watch_think(self):
+        """A search that never comes back must not leave "thinking" on screen
+        forever. After 18 s the board is released, and a dead engine is
+        restarted in the background so the next move still works."""
+        if not self.busy:
+            self._think_started = 0.0
+            return
+        now = time.time()
+        if not self._think_started:
+            self._think_started = now
+            return
+        if now - self._think_started < THINK_TIMEOUT:
+            return
+        self._think_started = 0.0
+        self.busy = False
+        try:
+            self.engine_lbl.configure(text="engine stalled", fg="#ca3431")
+        except Exception:
+            pass
+        self.say("the engine stopped answering — i'm waking it up. "
+                 "move again in a second.")
+        if not self.engine.alive():
+            def revive():
+                ok = self.engine.restart()
+                self.ui(lambda: self.engine_lbl.configure(
+                    text="engine ready" if ok else "engine restarted — retry",
+                    fg="#7ec96b" if ok else "#ca3431"))
+            threading.Thread(target=revive, daemon=True).start()
+
     # ---------------- background precompute ----------------
+    def remember_best(self, fen, info):
+        """Store a precomputed best move, oldest first out. A long session
+        would otherwise keep every position it has ever seen."""
+        self.best_cache[fen] = info
+        while len(self.best_cache) > BEST_CACHE_MAX:
+            self.best_cache.pop(next(iter(self.best_cache)))
+
+    def stop_prefetch(self):
+        """Let the prefetch worker finish its current job and exit."""
+        try:
+            self._prefetch_q.put(None)
+        except Exception:
+            pass
+
     def schedule_prefetch(self):
         """Queue a best-move lookup for this position and a deep grade for the
         move just played. Runs only while the board is idle."""
@@ -1250,9 +1367,7 @@ class CoachApp:
                     info = self.engine.best_move(
                         fen, 900, on_info=lambda i: self._live_best(i, fen))
                     if info and info.get("uci"):
-                        self.best_cache[fen] = info
-                        if len(self.best_cache) > 200:
-                            self.best_cache.pop(next(iter(self.best_cache)))
+                        self.remember_best(fen, info)
                 elif kind == "deep":
                     rec, sans, epoch = payload
                     if epoch != self.epoch or rec.get("deep"):
@@ -1730,7 +1845,8 @@ class CoachApp:
         self.chk = {}
         self.toggle_lbl = {}
         for key, label in (("threats", "Threats"), ("dots", "Dots"),
-                           ("coords", "Coords"), ("evalbar", "Eval bar")):
+                           ("coords", "Coords"), ("evalbar", "Eval bar"),
+                           ("hopeless", "Hopeless")):
             self.chk[key] = tk.BooleanVar(value=bool(self.settings[key]))
             lab = tk.Label(opts, text=label, bg=CARD2, fg="#8d96a8",
                            font=("Segoe UI", 8), padx=8, pady=3, cursor="hand2")
@@ -1848,8 +1964,10 @@ class CoachApp:
         if self.last_move:
             for sq in (self.last_move.from_square, self.last_move.to_square):
                 x, y = self.sq_xy(sq)
+                # stippled, so the square colour still shows through the way a
+                # translucent highlight does on chess.com
                 cv.create_rectangle(x, y, x + self.SQ, y + self.SQ,
-                                    fill="#dfdba6", width=0)
+                                    fill="#f3ef7d", stipple="gray50", width=0)
         if king_sq is not None:
             x, y = self.sq_xy(king_sq)
             cv.create_rectangle(x + 1, y + 1, x + self.SQ - 1, y + self.SQ - 1,
@@ -1894,7 +2012,7 @@ class CoachApp:
             sq, cls = badge
             pm = self._badge_photo(cls)
             if pm:
-                # top-right corner, inside the square the move landed on
+                # top-right corner of the square the move landed on
                 x, y = self.sq_xy(sq)
                 cv.create_image(x + self.SQ - 3, y + 3, image=pm,
                                 anchor="ne", tags="bbadge")
@@ -2147,7 +2265,7 @@ class CoachApp:
         if sq is not None and sq != drag["from"]:
             mv = self.find_move(drag["from"], sq)
             if mv is not None:
-                self.try_move(mv)
+                self.try_move(mv, snap=True)
                 return
         self.render()
 
@@ -2185,7 +2303,7 @@ class CoachApp:
         return chess.Move(base_move.from_square, base_move.to_square, promotion=choice["v"])
 
     # ---------------- game flow ----------------
-    def try_move(self, move):
+    def try_move(self, move, snap=False):
         self.hint_cache = None
         self.hint_armed = False
         self.board_badge = None
@@ -2232,7 +2350,7 @@ class CoachApp:
                              args=(move, san, only, epoch, rec),
                              daemon=True).start()
 
-        self.animate(move, start_grading)
+        self.animate(move, start_grading, snap=snap)
 
     def rate(self, fen, move, only, depth, sans, mover_color=None):
         """Grade one move in the position it was played from.
@@ -2258,10 +2376,14 @@ class CoachApp:
         return cls, loss, played["cp"], best.get("uci")
 
     def _grade_then_reply(self, move, san, only, epoch, rec):
-        if epoch != self.epoch:      # a new game started while we were working
+        if epoch != self.epoch:
+            # an abandoned game must never keep the board locked behind it
+            self.ui(self._set_idle)
             return
         if not self.stack or self.stack[-1] is not rec:
-            return                   # the move was already taken back
+            # the move was taken back before we got here: release the board
+            self.ui(self._set_idle)
+            return
         sans = [r["san"] for r in self.stack]        # includes this move
         pre = rec.get("presolved")
         if pre:                      # this is the hinted move, already solved
@@ -2309,10 +2431,11 @@ class CoachApp:
 
     def _engine_reply(self, epoch, fen):
         try:
-            level = self.settings["difficulty"]
+            level = 0 if self.settings.get("hopeless") else self.settings["difficulty"]
             move = book_move(fen) if level >= 3 else None   # 0 ms of theory
             if not move:
-                move = self.engine.play(fen, level, depth_for(level), budget_ms=1400)
+                move = self.engine.play(fen, level, depth_for(level),
+                                        budget_ms=1400 + min(20, level) * 55)
             if not move or chess.Move.from_uci(move) not in chess.Board(fen).legal_moves:
                 legal = list(chess.Board(fen).legal_moves)
                 move = random.choice(legal).uci() if legal else None
@@ -2360,10 +2483,17 @@ class CoachApp:
         self.animate(move, settle)
 
     # ---------------- animation ----------------
-    def animate(self, move, done=None):
-        """Slide the piece from its old square to the new one, then call done."""
+    def animate(self, move, done=None, snap=False):
+        """Slide the piece from its old square to the new one, then call done.
+
+        snap=True is for a dragged piece: it is already under the cursor, so
+        sliding it from its original square looks like a second move."""
         cv = self.canvas
         cv.delete("slide")
+        if snap:
+            if done:
+                done()
+            return
         dest_tag = f"sq{move.to_square}"
         cv.itemconfigure(dest_tag, state="hidden")
 
@@ -2375,14 +2505,16 @@ class CoachApp:
         x1, y1 = self.center(move.from_square)
         x2, y2 = self.center(move.to_square)
         item = cv.create_image(x1, y1, image=img, tags="slide")
-        steps = 10
+        # ~60 fps for the whole slide: ten frames of 17 ms is what read as a
+        # jump instead of a glide, and the ease needs the extra frames anyway
+        steps = max(14, int(SLIDE_MS / 9))
 
         def step(i=1):
             t = i / steps
-            e = 1 - (1 - t) ** 3
-            cv.coords(item, x1 + (x2 - x1) * e, y1 + (y2 - y1) * e)
+            e = 1 - (1 - t) ** 4            # quint-out: quick off the square,
+            cv.coords(item, x1 + (x2 - x1) * e, y1 + (y2 - y1) * e)   # soft landing
             if i < steps:
-                cv.after(max(8, SLIDE_MS // steps), lambda: step(i + 1))
+                cv.after(max(5, SLIDE_MS // steps), lambda: step(i + 1))
             else:
                 cv.delete("slide")
                 cv.itemconfigure(dest_tag, state="normal")
@@ -2479,6 +2611,15 @@ class CoachApp:
             except Exception:
                 cache[key] = None
         return cache[key]
+
+    def _set_idle(self):
+        """Release the board and say the engine is free, whatever happened."""
+        self.busy = False
+        self._think_started = 0.0
+        try:
+            self.engine_lbl.configure(text="engine ready", fg="#7ec96b")
+        except Exception:
+            pass
 
     def set_rating(self, cls, loss):
         icon = self._chip_icon(cls) if cls in GLYPH else None
@@ -2903,7 +3044,7 @@ class CoachApp:
         def work():
             info = self.engine.best_move(fen, 2500)
             if info and info.get("uci"):
-                self.best_cache[fen] = info
+                self.remember_best(fen, info)
             self.ui(lambda: self._show_hint((info or {}).get("uci"), fen))
 
         threading.Thread(target=work, daemon=True).start()
@@ -3495,6 +3636,7 @@ class CoachApp:
 
     def on_close(self):
         try:
+            self.stop_prefetch()
             self.engine.close()
         finally:
             self.root.destroy()
