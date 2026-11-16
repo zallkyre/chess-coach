@@ -737,11 +737,18 @@ class Window(QMainWindow):
         rl.addLayout(top)
         self.say = QLabel("your move. i'm not a pro — i'm just loud.")
         self.say.setWordWrap(True)
-        self.say.setMinimumHeight(70)
+        self.say.setMinimumHeight(0)
+        self.say.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.say.setStyleSheet(
             "background:rgba(12,16,12,.42);border:1px solid rgba(255,255,255,.08);"
             "border-radius:14px;padding:10px;color:#e6e9e2;font:13px 'Segoe UI'")
-        rl.addWidget(self.say)
+        _say_scroll = QScrollArea()
+        _say_scroll.setWidgetResizable(True)
+        _say_scroll.setFixedHeight(118)
+        _say_scroll.setFrameShape(QFrame.NoFrame)
+        _say_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        _say_scroll.setWidget(self.say)
+        rl.addWidget(_say_scroll)
         right.addWidget(ray)
 
         rate = Card()
@@ -780,7 +787,8 @@ class Window(QMainWindow):
         self.moves.setWordWrap(True)
         self.moves.setStyleSheet("background:rgba(12,16,12,.35);border-radius:12px;"
                                  "padding:10px;color:#e9e6e2;font:600 13px 'Segoe UI'")
-        self.moves.setMinimumHeight(150)
+        self.moves.setMinimumHeight(0)
+        self.moves.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         _move_scroll = QScrollArea()
         _move_scroll.setWidgetResizable(True)
         _move_scroll.setFixedHeight(170)
@@ -844,7 +852,10 @@ class Window(QMainWindow):
         send.clicked.connect(self.send_chat)
         self.entry.returnPressed.connect(self.send_chat)
 
-        lay.addLayout(right)
+        right_wrap = QWidget()
+        right_wrap.setFixedWidth(420)
+        right_wrap.setLayout(right)
+        lay.addWidget(right_wrap)
 
         BRIDGE.graded.connect(self.after_grade)
         BRIDGE.chat.connect(self.say_text)
@@ -860,6 +871,13 @@ class Window(QMainWindow):
         self._watch.start(1000)
 
         self.new_game(first=True)
+
+        # text that changes every move must never resize the window
+        for w, floor in ((self.turn, 90), (self.chip, 60), (self.eng, 60),
+                         (self.dval, 60), (self.lvl, 50)):
+            w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            w.setMinimumWidth(floor)
+
 
     def watch_think(self):
         if not self.busy:
